@@ -144,8 +144,15 @@ func writeCleanedCSV(outPath string, header []string, rows [][]string) error {
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "serve" {
+		// Render (and most PaaS platforms) assign the port via $PORT and
+		// expect the app to bind to it — there's no picking your own.
+		defaultAddr := ":8080"
+		if port := os.Getenv("PORT"); port != "" {
+			defaultAddr = ":" + port
+		}
+
 		serveFlags := flag.NewFlagSet("serve", flag.ExitOnError)
-		addr := serveFlags.String("addr", ":8080", "address to listen on")
+		addr := serveFlags.String("addr", defaultAddr, "address to listen on")
 		serveFlags.Parse(os.Args[2:])
 
 		if err := godotenv.Load(); err != nil && !os.IsNotExist(err) {
