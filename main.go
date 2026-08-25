@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/joho/godotenv"
 )
 
 // For a one-off local run, the CLI flow is:
@@ -146,7 +148,7 @@ func main() {
 		addr := serveFlags.String("addr", ":8080", "address to listen on")
 		serveFlags.Parse(os.Args[2:])
 
-		if err := loadEnvFile(".env"); err != nil {
+		if err := godotenv.Load(); err != nil && !os.IsNotExist(err) {
 			log.Fatalf("loading .env: %v", err)
 		}
 		clients, err := newClients()
@@ -167,7 +169,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := loadEnvFile(".env"); err != nil {
+	if err := godotenv.Load(); err != nil && !os.IsNotExist(err) {
 		log.Fatalf("loading .env: %v", err)
 	}
 
