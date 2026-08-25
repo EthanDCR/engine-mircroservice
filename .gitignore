@@ -1,0 +1,5 @@
+.env
+.cache/
+/engineScript
+/praxis-scripts
+*.csv
