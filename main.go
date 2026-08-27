@@ -301,29 +301,24 @@ func newClients() (*clients, error) {
 	}, nil
 }
 
-// enrichRow runs the three independent branches (DealMachine, StormPull,
-// BatchData) concurrently.
+// enrichRow runs the three independent API lookups (DealMachine, StormPull,
+// BatchData) concurrently, then reconciles DealMachine's contacts against
+// BatchData's afterward — that step needs both results at once, so it can't
+// happen inside either goroutine.
 func enrichRow(ctx context.Context, c *clients, addr Address) enrichment {
 	var enr enrichment
 	var wg sync.WaitGroup
 
+	var dmRes dealMachineResult
+	var dmErr error
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		res, err := c.dealMachine.lookup(ctx, addr)
-		if err != nil {
-			enr.DealMachineError = err.Error()
-			return
-		}
-		enr.DealMachineMatched = strconv.FormatBool(res.Matched)
-		if res.YearBuilt != nil {
-			enr.DealMachineYearBuilt = strconv.Itoa(*res.YearBuilt)
-		}
-		if res.LivingAreaSqft != nil {
-			enr.DealMachineLivingAreaSqft = strconv.Itoa(*res.LivingAreaSqft)
-		}
+		dmRes, dmErr = c.dealMachine.lookup(ctx, addr)
 	}()
 
+	var bdRes batchDataResultItem
+	var bdErr error
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -349,17 +344,20 @@ func enrichRow(ctx context.Context, c *clients, addr Address) enrichment {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		res, err := c.batchData.skipTrace(ctx, addr)
-		if err != nil {
-			enr.BatchDataError = err.Error()
-			return
-		}
-		if len(res.Property.Owners) > 0 {
-			enr.BatchDataPropertyOwnerName = res.Property.Owners[0].Name.Full
+		bdRes, bdErr = c.batchData.skipTrace(ctx, addr)
+	}()
+
+	wg.Wait()
+
+	if bdErr != nil {
+		enr.BatchDataError = bdErr.Error()
+	} else {
+		if len(bdRes.Property.Owners) > 0 {
+			enr.BatchDataPropertyOwnerName = bdRes.Property.Owners[0].Name.Full
 		}
 
-		for p := 0; p < maxPersons && p < len(res.Persons); p++ {
-			src := res.Persons[p]
+		for p := 0; p < maxPersons && p < len(bdRes.Persons); p++ {
+			src := bdRes.Persons[p]
 			out := personOut{
 				Name:      src.Name.Full,
 				Litigator: strconv.FormatBool(src.Litigator),
@@ -382,10 +380,82 @@ func enrichRow(ctx context.Context, c *clients, addr Address) enrichment {
 			}
 			enr.BatchDataPersons[p] = out
 		}
-	}()
+	}
 
-	wg.Wait()
+	// BatchData phone numbers already on this row, so DealMachine contacts
+	// below can drop numbers we already have instead of listing them twice.
+	batchDataPhones := make(map[string]bool)
+	for _, person := range bdRes.Persons {
+		for _, phone := range person.Phones {
+			batchDataPhones[normalizePhoneDigits(phone.Number)] = true
+		}
+	}
+
+	if dmErr != nil {
+		enr.DealMachineError = dmErr.Error()
+	} else {
+		enr.DealMachineMatched = strconv.FormatBool(dmRes.Matched)
+		if dmRes.YearBuilt != nil {
+			enr.DealMachineYearBuilt = strconv.Itoa(*dmRes.YearBuilt)
+		}
+		if dmRes.LivingAreaSqft != nil {
+			enr.DealMachineLivingAreaSqft = strconv.Itoa(*dmRes.LivingAreaSqft)
+		}
+
+		for i := 0; i < maxDealMachineContacts && i < len(dmRes.Contacts); i++ {
+			src := dmRes.Contacts[i]
+			out := dmContactOut{
+				Name:          src.FullName,
+				IsLikelyOwner: strconv.FormatBool(src.IsLikelyOwner),
+			}
+			matched := false
+			slot := 0
+			for _, phone := range src.Phones {
+				if batchDataPhones[normalizePhoneDigits(phone.Number)] {
+					matched = true
+					continue // already have this number from BatchData; don't list it twice
+				}
+				if slot >= maxDealMachinePhonesPerContact {
+					continue
+				}
+				out.Phones[slot] = dmPhoneOut{
+					Number: phone.Number,
+					Type:   phone.Type,
+					DNC:    strconv.FormatBool(phone.DoNotCall),
+				}
+				slot++
+			}
+			if matched {
+				out.BatchDataPhoneMatchScore = "1"
+			} else {
+				out.BatchDataPhoneMatchScore = "0"
+			}
+			for em := 0; em < maxDealMachineEmailsPerContact && em < len(src.Emails); em++ {
+				out.Emails[em] = src.Emails[em].Address
+			}
+			enr.DealMachineContacts[i] = out
+		}
+	}
+
 	return enr
+}
+
+// normalizePhoneDigits strips a number down to its bare digits (dropping a
+// leading US country code "1" on 11-digit numbers) so phone numbers from
+// different providers — which format them differently — can be compared
+// for an exact match.
+func normalizePhoneDigits(num string) string {
+	var b strings.Builder
+	for _, r := range num {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	digits := b.String()
+	if len(digits) == 11 && digits[0] == '1' {
+		digits = digits[1:]
+	}
+	return digits
 }
 
 func resolveColumns(header []string) (map[string]int, error) {

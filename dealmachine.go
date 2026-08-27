@@ -12,6 +12,12 @@ import (
 
 const dealMachineURL = "https://api.v2.dealmachine.com/v1/enrichment/address"
 
+// dealMachineContactAudience controls which contacts DealMachine returns
+// alongside property fields. "owners" costs people credits (unlike "none"),
+// but gives us owner name/phone/email directly from DealMachine so it's
+// available even for addresses BatchData fails to skip-trace.
+const dealMachineContactAudience = "owners"
+
 type dealMachineClient struct {
 	apiKey  string
 	http    *http.Client
@@ -33,23 +39,43 @@ type dealMachineResponse struct {
 }
 
 type dealMachineResult struct {
-	Matched        bool `json:"matched"`
-	YearBuilt      *int `json:"year_built"`
-	LivingAreaSqft *int `json:"living_area_sqft"`
+	Matched        bool                 `json:"matched"`
+	YearBuilt      *int                 `json:"year_built"`
+	LivingAreaSqft *int                 `json:"living_area_sqft"`
+	Contacts       []dealMachineContact `json:"contacts"`
 	MatchFailure   *struct {
 		Code   string `json:"code"`
 		Reason string `json:"reason"`
 	} `json:"match_failure"`
 }
 
-// lookup enriches a single address with property fields we don't get
-// from the source CSV: year built and interior building square footage.
-// contact_audience is explicitly "none" — owner contact info comes from
-// BatchData, not DealMachine, per project decision. Responses are cached
-// on disk by address so re-shaping what we extract never re-bills the
-// lookup.
+// dealMachineContact mirrors one entry in DealMachine's `contacts` array,
+// present when the request's contact_audience is anything but "none". With
+// contact_audience "owners" every entry should be a property owner, but
+// IsLikelyOwner is kept so callers don't have to just trust that.
+type dealMachineContact struct {
+	FullName      string `json:"full_name"`
+	IsLikelyOwner bool   `json:"is_likely_owner"`
+	Phones        []struct {
+		Number    string `json:"number"`
+		Type      string `json:"type"`
+		DoNotCall bool   `json:"do_not_call"`
+	} `json:"phones"`
+	Emails []struct {
+		Address string `json:"address"`
+	} `json:"emails"`
+}
+
+// lookup enriches a single address with property fields we don't get from
+// the source CSV (year built, interior building square footage) and, when
+// DealMachine has them, owner contacts (name/phone/email) — a fallback
+// source of owner contact data alongside BatchData, since the two don't
+// always match the same address. Responses are cached on disk by address
+// and contact audience so re-shaping what we extract never re-bills the
+// lookup, and changing the audience can't silently return a stale response
+// fetched under a different one.
 func (c *dealMachineClient) lookup(ctx context.Context, addr Address) (dealMachineResult, error) {
-	key := fmt.Sprintf("%s|%s|%s|%s", addr.Street, addr.City, addr.State, addr.Zip)
+	key := fmt.Sprintf("%s|%s|%s|%s|%s", addr.Street, addr.City, addr.State, addr.Zip, dealMachineContactAudience)
 
 	data, err := cachedFetch("dealmachine", key, func() ([]byte, error) {
 		return c.fetch(ctx, addr)
@@ -78,7 +104,7 @@ func (c *dealMachineClient) fetch(ctx context.Context, addr Address) ([]byte, er
 			{FullAddress: fmt.Sprintf("%s, %s, %s %s", addr.Street, addr.City, addr.State, addr.Zip)},
 		},
 		Fields:          []string{"year_built", "living_area_sqft"},
-		ContactAudience: "none",
+		ContactAudience: dealMachineContactAudience,
 	}
 
 	payload, err := json.Marshal(body)
