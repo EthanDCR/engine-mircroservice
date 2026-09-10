@@ -28,6 +28,7 @@ func runServe(addr string, c *clients) {
 	mux.HandleFunc("POST /enrich", requireAPIKey(apiKey, handleEnrich(c, store)))
 	mux.HandleFunc("GET /jobs/{id}", requireAPIKey(apiKey, handleJobStatus(store)))
 	mux.HandleFunc("GET /jobs/{id}/result", requireAPIKey(apiKey, handleJobResult(store)))
+	mux.HandleFunc("POST /enrich-one", requireAPIKey(apiKey, handleEnrichOne(c)))
 
 	log.Printf("listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, mux))
@@ -145,5 +146,46 @@ func handleJobResult(store *jobStore) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "text/csv")
 		w.Write(body)
+	}
+}
+
+// handleEnrichOne runs the same enrichRow lookup used for bulk CSV rows
+// against a single address and returns the result as a flat column-name ->
+// value JSON object — the same shape as a row of the CSV output (same
+// outputColumns keys, plus the address under the CSV's own input column
+// names) — for on-demand single-target pulls (e.g. a rep pulling contacts
+// for one target from the app UI) where the job-queue/polling flow the bulk
+// CSV path uses would be pointless latency for one address. Returning the
+// same shape as the CSV means the base44 side can reuse its existing
+// CSV-row -> Target/Contact mapping instead of a second, divergent one.
+func handleEnrichOne(c *clients) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var addr Address
+		if err := json.NewDecoder(r.Body).Decode(&addr); err != nil {
+			http.Error(w, fmt.Sprintf("invalid JSON body: %v", err), http.StatusBadRequest)
+			return
+		}
+		if addr.Street == "" {
+			http.Error(w, "street is required", http.StatusBadRequest)
+			return
+		}
+
+		enr := enrichRow(r.Context(), c, addr)
+		values := enr.toRow()
+
+		row := map[string]string{
+			"Address":      addr.Street,
+			"Municipality": addr.City,
+			"State":        addr.State,
+			"ZIP Code":     addr.Zip,
+		}
+		for i, col := range outputColumns {
+			if i < len(values) {
+				row[col] = values[i]
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(row)
 	}
 }
