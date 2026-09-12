@@ -301,6 +301,27 @@ func newClients() (*clients, error) {
 	}, nil
 }
 
+// businessNameKeywords catches the common ways a property owner shows up as
+// a business entity rather than a person on a deed — BatchData/DealMachine
+// don't classify this themselves, they just hand back whatever name string
+// is on file, LLC suffix and all.
+var businessNameKeywords = []string{
+	"LLC", "L.L.C", "INC", "INCORPORATED", "CORP", "CORPORATION", " LP", "L.P",
+	"LTD", "TRUST", "LLP", "HOLDINGS", "PROPERTIES", "PARTNERS", "ENTERPRISES",
+	"GROUP", "COMPANY", "ASSOCIATES", "REALTY", "INVESTMENTS", "CHURCH",
+	"FOUNDATION", "MINISTRIES", "PORTFOLIO", "CAPITAL", "VENTURES", "FUND",
+}
+
+func isBusinessName(name string) bool {
+	upper := " " + strings.ToUpper(name) + " "
+	for _, kw := range businessNameKeywords {
+		if strings.Contains(upper, strings.ToUpper(kw)) {
+			return true
+		}
+	}
+	return false
+}
+
 // enrichRow runs the three independent API lookups (DealMachine, StormPull,
 // BatchData) concurrently, then reconciles DealMachine's contacts against
 // BatchData's afterward — that step needs both results at once, so it can't
@@ -353,7 +374,17 @@ func enrichRow(ctx context.Context, c *clients, addr Address) enrichment {
 		enr.BatchDataError = bdErr.Error()
 	} else {
 		if len(bdRes.Property.Owners) > 0 {
-			enr.BatchDataPropertyOwnerName = bdRes.Property.Owners[0].Name.Full
+			// A property can have more than one owner on title (e.g. an LLC
+			// plus an individual, or joint owners) — join them all instead of
+			// keeping only the first and silently dropping the rest.
+			names := make([]string, 0, len(bdRes.Property.Owners))
+			for _, o := range bdRes.Property.Owners {
+				if o.Name.Full != "" {
+					names = append(names, o.Name.Full)
+				}
+			}
+			enr.BatchDataPropertyOwnerName = strings.Join(names, "; ")
+			enr.OwnerIsBusiness = strconv.FormatBool(isBusinessName(enr.BatchDataPropertyOwnerName))
 		}
 
 		for p := 0; p < maxPersons && p < len(bdRes.Persons); p++ {
