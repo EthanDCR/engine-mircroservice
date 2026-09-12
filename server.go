@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
+	"time"
 )
 
 // runServe starts the HTTP microservice: submit a CSV, poll a job for
@@ -31,12 +33,45 @@ func runServe(addr string, c *clients) {
 	mux.HandleFunc("POST /enrich-one", requireAPIKey(apiKey, handleEnrichOne(c)))
 
 	log.Printf("listening on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, mux))
+	log.Fatal(http.ListenAndServe(addr, requestLogger(mux)))
+}
+
+// requestLogger wraps every request with a short id (threaded through ctx
+// so downstream job/provider logs can be correlated back to it) and logs
+// method/path/status/duration once the handler returns — this is the main
+// thing that was missing: without it there was no record of what hit the
+// service, how long it took, or whether it 5xx'd, only whatever the handler
+// itself happened to log.
+func requestLogger(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := newReqID()
+		ctx := withReqID(r.Context(), id)
+		r = r.WithContext(ctx)
+
+		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		start := time.Now()
+		next.ServeHTTP(sw, r)
+
+		slog.InfoContext(ctx, "http request", "req_id", id, "method", r.Method, "path", r.URL.Path,
+			"status", sw.status, "elapsed_ms", time.Since(start).Milliseconds(), "remote", r.RemoteAddr)
+	})
+}
+
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
 }
 
 func requireAPIKey(key string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-API-Key") != key {
+			slog.WarnContext(r.Context(), "unauthorized request", "req_id", reqID(r.Context()),
+				"path", r.URL.Path, "remote", r.RemoteAddr)
 			http.Error(w, "invalid or missing X-API-Key", http.StatusUnauthorized)
 			return
 		}
@@ -70,26 +105,38 @@ func handleEnrich(c *clients, store *jobStore) http.HandlerFunc {
 		id, j := store.create()
 		j.setProgress(0, len(rows))
 
+		// The submitting HTTP request's context is canceled once this handler
+		// returns, but the job keeps running in the background — reuse its
+		// req_id on a detached context so job logs still tie back to the
+		// request that created it.
+		jobCtx := withReqID(context.Background(), reqID(r.Context()))
+		slog.InfoContext(jobCtx, "job created", "req_id", reqID(r.Context()), "job_id", id, "rows", len(rows), "workers", workers)
+
 		go func() {
+			start := time.Now()
 			j.setStatus(jobProcessing)
 
-			fullHeader, fullRows, err := enrichCSV(context.Background(), c, header, rows, workers, j.setProgress)
+			fullHeader, fullRows, err := enrichCSV(jobCtx, c, header, rows, workers, j.setProgress)
 			if err != nil {
+				slog.ErrorContext(jobCtx, "job failed", "job_id", id, "err", err)
 				j.fail(err)
 				return
 			}
 			enrichedCSV, err := encodeCSV(fullHeader, fullRows)
 			if err != nil {
+				slog.ErrorContext(jobCtx, "job failed", "job_id", id, "err", err)
 				j.fail(err)
 				return
 			}
 			cleanHeader, cleanRows := cleanForReps(fullHeader, fullRows)
 			cleanedCSV, err := encodeCSV(cleanHeader, cleanRows)
 			if err != nil {
+				slog.ErrorContext(jobCtx, "job failed", "job_id", id, "err", err)
 				j.fail(err)
 				return
 			}
 			j.finish(enrichedCSV, cleanedCSV)
+			slog.InfoContext(jobCtx, "job done", "job_id", id, "rows", len(fullRows), "elapsed_ms", time.Since(start).Milliseconds())
 		}()
 
 		w.Header().Set("Content-Type", "application/json")
@@ -170,7 +217,11 @@ func handleEnrichOne(c *clients) http.HandlerFunc {
 			return
 		}
 
+		start := time.Now()
 		enr := enrichRow(r.Context(), c, addr)
+		slog.InfoContext(r.Context(), "enrich-one done", "req_id", reqID(r.Context()),
+			"street", addr.Street, "elapsed_ms", time.Since(start).Milliseconds(),
+			"dealmachine_error", enr.DealMachineError, "batchdata_error", enr.BatchDataError, "stormpull_error", enr.StormPullError)
 		values := enr.toRow()
 
 		row := map[string]string{

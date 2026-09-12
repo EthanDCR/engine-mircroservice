@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -52,7 +53,7 @@ func (c *stormPullClient) lookup(ctx context.Context, addr Address) (stormPullRe
 		key = fmt.Sprintf("%s|coord|%.6f|%.6f", key, *addr.Lat, *addr.Lng)
 	}
 
-	data, err := cachedFetch("stormpull", key, func() ([]byte, error) {
+	data, err := cachedFetch(ctx, "stormpull", key, func() ([]byte, error) {
 		return c.fetch(ctx, addr)
 	})
 	if err != nil {
@@ -104,6 +105,9 @@ func (c *stormPullClient) fetch(ctx context.Context, addr Address) ([]byte, erro
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		slog.WarnContext(ctx, "stormpull unexpected status", "req_id", reqID(ctx),
+			"status", resp.StatusCode, "url", u, "body", string(body))
 		return nil, fmt.Errorf("stormpull: unexpected status %d", resp.StatusCode)
 	}
 	return io.ReadAll(resp.Body)

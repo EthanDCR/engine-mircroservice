@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 )
 
@@ -93,7 +94,7 @@ type batchDataEmail struct {
 func (c *batchDataClient) skipTrace(ctx context.Context, addr Address) (batchDataResultItem, error) {
 	key := fmt.Sprintf("%s|%s|%s|%s", addr.Street, addr.City, addr.State, addr.Zip)
 
-	data, err := cachedFetch("batchdata", key, func() ([]byte, error) {
+	data, err := cachedFetch(ctx, "batchdata", key, func() ([]byte, error) {
 		return c.fetch(ctx, addr)
 	})
 	if err != nil {
@@ -142,6 +143,9 @@ func (c *batchDataClient) fetch(ctx context.Context, addr Address) ([]byte, erro
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		slog.WarnContext(ctx, "batchdata unexpected status", "req_id", reqID(ctx),
+			"status", resp.StatusCode, "body", string(body))
 		return nil, fmt.Errorf("batchdata: unexpected status %d", resp.StatusCode)
 	}
 	return io.ReadAll(resp.Body)

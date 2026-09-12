@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -143,6 +144,8 @@ func writeCleanedCSV(outPath string, header []string, rows [][]string) error {
 }
 
 func main() {
+	initLogging()
+
 	if len(os.Args) > 1 && os.Args[1] == "serve" {
 		// Render (and most PaaS platforms) assign the port via $PORT and
 		// expect the app to bind to it — there's no picking your own.
@@ -190,7 +193,8 @@ func main() {
 		log.Fatalf("reading input CSV: %v", err)
 	}
 
-	fullHeader, results, err := enrichCSV(context.Background(), clients, header, rows, *workers, nil)
+	ctx := withReqID(context.Background(), newReqID())
+	fullHeader, results, err := enrichCSV(ctx, clients, header, rows, *workers, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -210,6 +214,8 @@ func main() {
 // across a worker pool, and assemble the full output header/rows.
 // onProgress, if non-nil, is called after each row completes.
 func enrichCSV(ctx context.Context, c *clients, header []string, rows [][]string, workers int, onProgress func(done, total int)) (fullHeader []string, fullRows [][]string, err error) {
+	slog.InfoContext(ctx, "enrichCSV starting", "req_id", reqID(ctx), "rows", len(rows), "workers", workers)
+
 	colIdx, err := resolveColumns(header)
 	if err != nil {
 		return nil, nil, err
@@ -222,6 +228,7 @@ func enrichCSV(ctx context.Context, c *clients, header []string, rows [][]string
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	done := 0
+	var dmErrs, bdErrs, spErrs int
 
 	for i, row := range rows {
 		wg.Add(1)
@@ -249,17 +256,29 @@ func enrichCSV(ctx context.Context, c *clients, header []string, rows [][]string
 			mu.Lock()
 			done++
 			n := done
+			if enr.DealMachineError != "" {
+				dmErrs++
+			}
+			if enr.BatchDataError != "" {
+				bdErrs++
+			}
+			if enr.StormPullError != "" {
+				spErrs++
+			}
 			mu.Unlock()
 
 			if onProgress != nil {
 				onProgress(n, len(rows))
 			}
 			if n%25 == 0 || n == len(rows) {
-				log.Printf("processed %d/%d rows", n, len(rows))
+				slog.InfoContext(ctx, "enrichCSV progress", "req_id", reqID(ctx), "done", n, "total", len(rows))
 			}
 		}(i, row)
 	}
 	wg.Wait()
+
+	slog.InfoContext(ctx, "enrichCSV done", "req_id", reqID(ctx), "rows", len(rows),
+		"dealmachine_errors", dmErrs, "batchdata_errors", bdErrs, "stormpull_errors", spErrs)
 
 	fullHeader = append(append([]string{}, filteredHeader...), outputColumns...)
 	return fullHeader, results, nil
@@ -345,6 +364,7 @@ func enrichRow(ctx context.Context, c *clients, addr Address) enrichment {
 		defer wg.Done()
 		res, err := c.stormPull.lookup(ctx, addr)
 		if err != nil {
+			slog.WarnContext(ctx, "stormpull lookup failed", "req_id", reqID(ctx), "street", addr.Street, "err", err)
 			enr.StormPullError = err.Error()
 			return
 		}
@@ -371,6 +391,7 @@ func enrichRow(ctx context.Context, c *clients, addr Address) enrichment {
 	wg.Wait()
 
 	if bdErr != nil {
+		slog.WarnContext(ctx, "batchdata lookup failed", "req_id", reqID(ctx), "street", addr.Street, "err", bdErr)
 		enr.BatchDataError = bdErr.Error()
 	} else {
 		if len(bdRes.Property.Owners) > 0 {
@@ -423,6 +444,7 @@ func enrichRow(ctx context.Context, c *clients, addr Address) enrichment {
 	}
 
 	if dmErr != nil {
+		slog.WarnContext(ctx, "dealmachine lookup failed", "req_id", reqID(ctx), "street", addr.Street, "err", dmErr)
 		enr.DealMachineError = dmErr.Error()
 	} else {
 		enr.DealMachineMatched = strconv.FormatBool(dmRes.Matched)

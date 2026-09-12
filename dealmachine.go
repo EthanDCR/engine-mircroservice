@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -77,7 +78,7 @@ type dealMachineContact struct {
 func (c *dealMachineClient) lookup(ctx context.Context, addr Address) (dealMachineResult, error) {
 	key := fmt.Sprintf("%s|%s|%s|%s|%s", addr.Street, addr.City, addr.State, addr.Zip, dealMachineContactAudience)
 
-	data, err := cachedFetch("dealmachine", key, func() ([]byte, error) {
+	data, err := cachedFetch(ctx, "dealmachine", key, func() ([]byte, error) {
 		return c.fetch(ctx, addr)
 	})
 	if err != nil {
@@ -131,6 +132,8 @@ func (c *dealMachineClient) fetch(ctx context.Context, addr Address) ([]byte, er
 
 		if resp.StatusCode == http.StatusTooManyRequests {
 			resp.Body.Close()
+			slog.WarnContext(ctx, "dealmachine rate limited", "req_id", reqID(ctx),
+				"attempt", attempt, "backoff_ms", backoff.Milliseconds())
 			if attempt >= maxAttempts {
 				return nil, fmt.Errorf("dealmachine: rate limited after %d attempts", attempt)
 			}
@@ -144,7 +147,10 @@ func (c *dealMachineClient) fetch(ctx context.Context, addr Address) ([]byte, er
 		}
 
 		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
+			slog.WarnContext(ctx, "dealmachine unexpected status", "req_id", reqID(ctx),
+				"status", resp.StatusCode, "body", string(body))
 			return nil, fmt.Errorf("dealmachine: unexpected status %d", resp.StatusCode)
 		}
 
