@@ -341,6 +341,66 @@ func isBusinessName(name string) bool {
 	return false
 }
 
+// resultLogAttrs summarizes one address + its enrichment result into log
+// fields — the address/coordinates queried and a compact readout of what
+// each provider actually returned (or its error), so a single log line
+// answers "what did we look up and what came back" without dumping the
+// full row.
+func resultLogAttrs(addr Address, enr enrichment) []any {
+	attrs := []any{
+		"street", addr.Street, "city", addr.City, "state", addr.State, "zip", addr.Zip,
+	}
+	if addr.Lat != nil && addr.Lng != nil {
+		attrs = append(attrs, "lat", *addr.Lat, "lng", *addr.Lng)
+	}
+
+	if enr.DealMachineError != "" {
+		attrs = append(attrs, "dealmachine_error", enr.DealMachineError)
+	} else {
+		attrs = append(attrs, "dealmachine_matched", enr.DealMachineMatched,
+			"dealmachine_year_built", enr.DealMachineYearBuilt,
+			"dealmachine_contacts", nonEmptyDealMachineContacts(enr))
+	}
+
+	if enr.BatchDataError != "" {
+		attrs = append(attrs, "batchdata_error", enr.BatchDataError)
+	} else {
+		attrs = append(attrs, "batchdata_owner", enr.BatchDataPropertyOwnerName,
+			"batchdata_persons", nonEmptyBatchDataPersons(enr))
+	}
+
+	if enr.StormPullError != "" {
+		attrs = append(attrs, "stormpull_error", enr.StormPullError)
+	} else {
+		attrs = append(attrs, "stormpull_events_found", enr.StormPullEventsFound,
+			"stormpull_exposure_score", enr.StormPullExposureScore,
+			"stormpull_max_hail_in", enr.StormPullMaxHailSizeIn,
+			"stormpull_max_hail_date", enr.StormPullMaxHailDate)
+	}
+
+	return attrs
+}
+
+func nonEmptyDealMachineContacts(enr enrichment) int {
+	n := 0
+	for _, c := range enr.DealMachineContacts {
+		if c.Name != "" {
+			n++
+		}
+	}
+	return n
+}
+
+func nonEmptyBatchDataPersons(enr enrichment) int {
+	n := 0
+	for _, p := range enr.BatchDataPersons {
+		if p.Name != "" {
+			n++
+		}
+	}
+	return n
+}
+
 // enrichRow runs the three independent API lookups (DealMachine, StormPull,
 // BatchData) concurrently, then reconciles DealMachine's contacts against
 // BatchData's afterward — that step needs both results at once, so it can't
@@ -489,6 +549,12 @@ func enrichRow(ctx context.Context, c *clients, addr Address) enrichment {
 			enr.DealMachineContacts[i] = out
 		}
 	}
+
+	// Debug (not Info) because a bulk CSV job runs this per row — thousands
+	// of these at Info would drown out everything else in Render's log
+	// view. The per-row progress log in enrichCSV covers the default case;
+	// set LOG_LEVEL=debug to see every address + what came back.
+	slog.DebugContext(ctx, "enrichRow result", append([]any{"req_id", reqID(ctx)}, resultLogAttrs(addr, enr)...)...)
 
 	return enr
 }

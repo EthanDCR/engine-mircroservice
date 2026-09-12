@@ -219,9 +219,8 @@ func handleEnrichOne(c *clients) http.HandlerFunc {
 
 		start := time.Now()
 		enr := enrichRow(r.Context(), c, addr)
-		slog.InfoContext(r.Context(), "enrich-one done", "req_id", reqID(r.Context()),
-			"street", addr.Street, "elapsed_ms", time.Since(start).Milliseconds(),
-			"dealmachine_error", enr.DealMachineError, "batchdata_error", enr.BatchDataError, "stormpull_error", enr.StormPullError)
+		attrs := append([]any{"req_id", reqID(r.Context()), "elapsed_ms", time.Since(start).Milliseconds()}, resultLogAttrs(addr, enr)...)
+		slog.InfoContext(r.Context(), "enrich-one done", attrs...)
 		values := enr.toRow()
 
 		row := map[string]string{
