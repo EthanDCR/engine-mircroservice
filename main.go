@@ -361,6 +361,11 @@ func resultLogAttrs(addr Address, enr enrichment) []any {
 			"dealmachine_year_built", enr.DealMachineYearBuilt,
 			"dealmachine_contacts", nonEmptyDealMachineContacts(enr))
 	}
+	if enr.DealMachineResolvedStreet != "" {
+		attrs = append(attrs, "dealmachine_resolved_address",
+			fmt.Sprintf("%s, %s, %s %s", enr.DealMachineResolvedStreet, enr.DealMachineResolvedCity,
+				enr.DealMachineResolvedState, enr.DealMachineResolvedZip))
+	}
 
 	if enr.BatchDataError != "" {
 		attrs = append(attrs, "batchdata_error", enr.BatchDataError)
@@ -405,16 +410,29 @@ func nonEmptyBatchDataPersons(enr enrichment) int {
 // BatchData) concurrently, then reconciles DealMachine's contacts against
 // BatchData's afterward — that step needs both results at once, so it can't
 // happen inside either goroutine.
+//
+// When addr carries lat/lng (a map click, never a bulk CSV row), DealMachine
+// is queried by coordinate instead of by address string, and BatchData's
+// call waits on that result and uses DealMachine's resolved address instead
+// of addr — see reverseGeocode in dealmachine.go for why. StormPull isn't
+// affected either way: it already takes coordinates directly when present.
 func enrichRow(ctx context.Context, c *clients, addr Address) enrichment {
 	var enr enrichment
 	var wg sync.WaitGroup
 
 	var dmRes dealMachineResult
 	var dmErr error
+	var dmWG sync.WaitGroup
+	dmWG.Add(1)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		dmRes, dmErr = c.dealMachine.lookup(ctx, addr)
+		defer dmWG.Done()
+		if addr.Lat != nil && addr.Lng != nil {
+			dmRes, dmErr = c.dealMachine.reverseGeocode(ctx, *addr.Lat, *addr.Lng)
+		} else {
+			dmRes, dmErr = c.dealMachine.lookup(ctx, addr)
+		}
 	}()
 
 	var bdRes batchDataResultItem
@@ -445,10 +463,28 @@ func enrichRow(ctx context.Context, c *clients, addr Address) enrichment {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		bdRes, bdErr = c.batchData.skipTrace(ctx, addr)
+
+		bdAddr := addr
+		if addr.Lat != nil && addr.Lng != nil {
+			// Only known once DealMachine's coordinate match resolves.
+			// Bulk CSV rows never carry lat/lng, so they never reach this
+			// wait and DealMachine/BatchData stay fully parallel for them.
+			dmWG.Wait()
+			if dmErr == nil && dmRes.Matched && dmRes.Address != "" {
+				bdAddr = Address{Street: dmRes.Address, City: dmRes.City, State: dmRes.State, Zip: dmRes.Zip}
+			}
+		}
+		bdRes, bdErr = c.batchData.skipTrace(ctx, bdAddr)
 	}()
 
 	wg.Wait()
+
+	if addr.Lat != nil && addr.Lng != nil && dmErr == nil && dmRes.Matched && dmRes.Address != "" {
+		enr.DealMachineResolvedStreet = dmRes.Address
+		enr.DealMachineResolvedCity = dmRes.City
+		enr.DealMachineResolvedState = dmRes.State
+		enr.DealMachineResolvedZip = dmRes.Zip
+	}
 
 	if bdErr != nil {
 		slog.WarnContext(ctx, "batchdata lookup failed", "req_id", reqID(ctx), "street", addr.Street, "err", bdErr)

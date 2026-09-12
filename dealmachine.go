@@ -12,6 +12,7 @@ import (
 )
 
 const dealMachineURL = "https://api.v2.dealmachine.com/v1/enrichment/address"
+const dealMachineReverseGeocodeURL = "https://api.v2.dealmachine.com/v1/enrichment/reverse-geocode"
 
 // dealMachineContactAudience controls which contacts DealMachine returns
 // alongside property fields. "owners" costs people credits (unlike "none"),
@@ -35,12 +36,38 @@ type dealMachineAddressInput struct {
 	FullAddress string `json:"full_address"`
 }
 
+// dealMachineCoordInput is the /reverse-geocode counterpart to
+// dealMachineAddressInput — same request/response envelope, but matched by
+// coordinate against DealMachine's own parcel data instead of an address
+// string.
+type dealMachineCoordInput struct {
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+}
+
+type dealMachineReverseGeocodeRequest struct {
+	Data            []dealMachineCoordInput `json:"data"`
+	Fields          []string                `json:"fields,omitempty"`
+	ContactAudience string                  `json:"contact_audience,omitempty"`
+}
+
 type dealMachineResponse struct {
 	Data []dealMachineResult `json:"data"`
 }
 
 type dealMachineResult struct {
-	Matched        bool                 `json:"matched"`
+	Matched bool `json:"matched"`
+	// FullAddress/Address/City/State/Zip are DealMachine's own resolved
+	// address for the matched parcel — present on both /address and
+	// /reverse-geocode responses. Only /reverse-geocode's version of these
+	// actually matters to callers: that's DealMachine's authoritative
+	// address for a coordinate, used to correct a possibly-wrong
+	// reverse-geocoded address before handing it to BatchData.
+	FullAddress    string               `json:"full_address"`
+	Address        string               `json:"address"`
+	City           string               `json:"city"`
+	State          string               `json:"state"`
+	Zip            string               `json:"zip"`
 	YearBuilt      *int                 `json:"year_built"`
 	LivingAreaSqft *int                 `json:"living_area_sqft"`
 	Contacts       []dealMachineContact `json:"contacts"`
@@ -95,10 +122,36 @@ func (c *dealMachineClient) lookup(ctx context.Context, addr Address) (dealMachi
 	return parsed.Data[0], nil
 }
 
-// fetch performs the actual HTTP call, retrying on 429 (rate limited)
-// with exponential backoff — a burst of concurrent requests reliably
-// triggers 429s here, and DealMachine only bills for matched results, so
-// retrying a 429 costs nothing extra.
+// reverseGeocode resolves DealMachine's own recorded parcel address for a
+// coordinate — used instead of lookup() whenever we only have lat/lng from a
+// map click. The Google reverse-geocode that produced the click's address
+// string can land on the wrong house number (an interpolated guess along
+// the street rather than the real parcel's recorded address), which then
+// fails to match anything in BatchData. Matching by coordinate instead finds
+// the actual parcel DealMachine has on file at that point and returns
+// *its* address — which is the address BatchData's own records can
+// actually match against. Cached the same way as lookup(), just keyed by
+// coordinate instead of address string.
+func (c *dealMachineClient) reverseGeocode(ctx context.Context, lat, lng float64) (dealMachineResult, error) {
+	key := fmt.Sprintf("coord|%.6f|%.6f|%s", lat, lng, dealMachineContactAudience)
+
+	data, err := cachedFetch(ctx, "dealmachine", key, func() ([]byte, error) {
+		return c.fetchReverseGeocode(ctx, lat, lng)
+	})
+	if err != nil {
+		return dealMachineResult{}, err
+	}
+
+	var parsed dealMachineResponse
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return dealMachineResult{}, err
+	}
+	if len(parsed.Data) == 0 {
+		return dealMachineResult{}, fmt.Errorf("dealmachine: empty data array in response")
+	}
+	return parsed.Data[0], nil
+}
+
 func (c *dealMachineClient) fetch(ctx context.Context, addr Address) ([]byte, error) {
 	body := dealMachineRequest{
 		Data: []dealMachineAddressInput{
@@ -112,13 +165,35 @@ func (c *dealMachineClient) fetch(ctx context.Context, addr Address) ([]byte, er
 	if err != nil {
 		return nil, err
 	}
+	return c.postWithRetry(ctx, dealMachineURL, payload)
+}
 
+func (c *dealMachineClient) fetchReverseGeocode(ctx context.Context, lat, lng float64) ([]byte, error) {
+	body := dealMachineReverseGeocodeRequest{
+		Data:            []dealMachineCoordInput{{Latitude: lat, Longitude: lng}},
+		Fields:          []string{"year_built", "living_area_sqft"},
+		ContactAudience: dealMachineContactAudience,
+	}
+
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	return c.postWithRetry(ctx, dealMachineReverseGeocodeURL, payload)
+}
+
+// postWithRetry performs the actual HTTP call to a DealMachine enrichment
+// endpoint (address or reverse-geocode — same auth/rate-limit/retry rules
+// either way), retrying on 429 (rate limited) with exponential backoff — a
+// burst of concurrent requests reliably triggers 429s here, and DealMachine
+// only bills for matched results, so retrying a 429 costs nothing extra.
+func (c *dealMachineClient) postWithRetry(ctx context.Context, url string, payload []byte) ([]byte, error) {
 	const maxAttempts = 5
 	backoff := 500 * time.Millisecond
 
 	for attempt := 1; ; attempt++ {
 		c.limiter.wait()
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, dealMachineURL, bytes.NewReader(payload))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 		if err != nil {
 			return nil, err
 		}

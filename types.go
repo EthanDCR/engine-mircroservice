@@ -75,6 +75,17 @@ type enrichment struct {
 	DealMachineContacts       [maxDealMachineContacts]dmContactOut
 	DealMachineError          string
 
+	// DealMachineResolved* is only set when the input Address carried
+	// lat/lng (a map click) and DealMachine matched a parcel at that
+	// coordinate — its own recorded address for that parcel, which the
+	// engine also uses as the address handed to BatchData instead of
+	// whatever the frontend's reverse-geocode guessed. Always blank for
+	// bulk CSV rows, which never have coordinates.
+	DealMachineResolvedStreet string
+	DealMachineResolvedCity   string
+	DealMachineResolvedState  string
+	DealMachineResolvedZip    string
+
 	StormPullEventsFound         string
 	StormPullMaxHailSizeIn       string
 	StormPullMaxHailDate         string
@@ -134,6 +145,10 @@ func buildOutputColumns() []string {
 
 	cols = append(cols,
 		"dealmachine_error",
+		"dealmachine_resolved_street",
+		"dealmachine_resolved_city",
+		"dealmachine_resolved_state",
+		"dealmachine_resolved_zip",
 
 		"stormpull_events_found",
 		"stormpull_max_hail_size_in",
@@ -201,6 +216,10 @@ func (e enrichment) toRow() []string {
 
 	row = append(row,
 		e.DealMachineError,
+		e.DealMachineResolvedStreet,
+		e.DealMachineResolvedCity,
+		e.DealMachineResolvedState,
+		e.DealMachineResolvedZip,
 
 		e.StormPullEventsFound,
 		e.StormPullMaxHailSizeIn,
