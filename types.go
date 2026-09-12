@@ -3,12 +3,17 @@ package main
 import "fmt"
 
 // Address is the common shape every enrichment API needs, built from
-// whatever columns the input CSV actually has.
+// whatever columns the input CSV actually has. Lat/Lng are optional — when
+// present (e.g. a target that's already been geocoded for the map), StormPull
+// uses its /coordinate endpoint instead of /address, since /address's
+// geocoding step has been failing on valid addresses (see stormpull.go).
 type Address struct {
 	Street string
 	City   string
 	State  string
 	Zip    string
+	Lat    *float64 `json:"lat"`
+	Lng    *float64 `json:"lng"`
 }
 
 // BatchData can return multiple associated persons per property and

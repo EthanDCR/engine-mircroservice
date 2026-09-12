@@ -7,9 +7,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 )
 
-const stormPullURL = "https://stormpull.com/api/v1/hail/address"
+const stormPullAddressURL = "https://stormpull.com/api/v1/hail/address"
+const stormPullCoordinateURL = "https://stormpull.com/api/v1/hail/coordinate"
 
 type stormPullClient struct {
 	apiKey string
@@ -42,10 +44,13 @@ type stormPullScore struct {
 // 12 months (yearsBack=1) to match the "Events (12mo)" figure the
 // project is targeting. Auth is via X-API-Key header, per StormPull's
 // docs (not Bearer — confirmed against the live docs page). Responses
-// are cached on disk by address so re-shaping what we extract never
-// re-bills the lookup.
+// are cached on disk by address (or coordinates, see fetch) so re-shaping
+// what we extract never re-bills the lookup.
 func (c *stormPullClient) lookup(ctx context.Context, addr Address) (stormPullResponse, error) {
 	key := fmt.Sprintf("%s|%s|%s|%s", addr.Street, addr.City, addr.State, addr.Zip)
+	if addr.Lat != nil && addr.Lng != nil {
+		key = fmt.Sprintf("%s|coord|%.6f|%.6f", key, *addr.Lat, *addr.Lng)
+	}
 
 	data, err := cachedFetch("stormpull", key, func() ([]byte, error) {
 		return c.fetch(ctx, addr)
@@ -61,13 +66,30 @@ func (c *stormPullClient) lookup(ctx context.Context, addr Address) (stormPullRe
 	return parsed, nil
 }
 
+// fetch prefers /hail/coordinate over /hail/address whenever we already
+// have lat/lng (e.g. a target already geocoded for the map) — /hail/address's
+// geocoding step started rejecting valid addresses outright (confirmed
+// against StormPull's own docs example and a canonical address), while
+// /hail/coordinate returns real data for the exact same account/plan state.
+// Both endpoints return the same `score` shape; only `results` differs
+// slightly, and we only read `results.events_found` from it either way.
 func (c *stormPullClient) fetch(ctx context.Context, addr Address) ([]byte, error) {
-	full := fmt.Sprintf("%s, %s, %s %s", addr.Street, addr.City, addr.State, addr.Zip)
-	u := stormPullURL + "?" + url.Values{
-		"address":       {full},
-		"years_back":    {"1"},
-		"include_score": {"true"},
-	}.Encode()
+	var u string
+	if addr.Lat != nil && addr.Lng != nil {
+		u = stormPullCoordinateURL + "?" + url.Values{
+			"lat":           {strconv.FormatFloat(*addr.Lat, 'f', -1, 64)},
+			"lon":           {strconv.FormatFloat(*addr.Lng, 'f', -1, 64)},
+			"years_back":    {"1"},
+			"include_score": {"true"},
+		}.Encode()
+	} else {
+		full := fmt.Sprintf("%s, %s, %s %s", addr.Street, addr.City, addr.State, addr.Zip)
+		u = stormPullAddressURL + "?" + url.Values{
+			"address":       {full},
+			"years_back":    {"1"},
+			"include_score": {"true"},
+		}.Encode()
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
