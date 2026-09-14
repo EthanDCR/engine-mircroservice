@@ -453,10 +453,15 @@ func enrichRow(ctx context.Context, c *clients, addr Address) enrichment {
 				enr.StormPullMaxHailSizeIn = strconv.FormatFloat(res.Score.Summary.LargestHailInches, 'f', 2, 64)
 			}
 			enr.StormPullMaxHailDate = res.Score.Summary.LargestHailDate
-			enr.StormPullLastEventDate = res.Score.Summary.MostRecentEventDate
-			if res.Score.Summary.MostRecentHailInches > 0 {
-				enr.StormPullLastEventHailSizeIn = strconv.FormatFloat(res.Score.Summary.MostRecentHailInches, 'f', 2, 64)
-			}
+		}
+		// score.summary.most_recent_event_date/hail_inches ignores
+		// min_hail_size (see fetch's doc comment) — an insignificant event a
+		// few days ago would otherwise outrank a real storm from a month
+		// earlier. Derive "most recent" ourselves from results.events, which
+		// IS filtered to stormPullMinHailSizeIn+.
+		if date, size, ok := mostRecentQualifyingEvent(res.Results.Events); ok {
+			enr.StormPullLastEventDate = date
+			enr.StormPullLastEventHailSizeIn = strconv.FormatFloat(size, 'f', 2, 64)
 		}
 	}()
 
