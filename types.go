@@ -44,6 +44,7 @@ type personOut struct {
 	Name                string
 	Litigator, Deceased string
 	DOB                 string
+	MailingAddress      string
 	Phones              [maxPhonesPerPerson]phoneOut
 	Emails              [maxEmailsPerPerson]string
 }
@@ -104,8 +105,12 @@ type enrichment struct {
 	BatchDataPersons           [maxPersons]personOut
 	BatchDataError             string
 
-	// No source covers these yet — always blank. Kept as columns so the
-	// output CSV shape is stable once a 5th source is added.
+	// RoofType is DealMachine's roof_cover (material — shingle/tile/metal/
+	// slate), not DealMachine's separate roof_type field (roof *shape* —
+	// gable/hip/flat/shed, which we don't request). OwnerIsBusiness is
+	// derived from BatchDataPropertyOwnerName via isBusinessName. The rest
+	// have no source yet — always blank, kept as columns so the output CSV
+	// shape is stable once a 5th source is added.
 	BuildingType    string
 	PropertyType    string
 	RoofType        string
@@ -167,6 +172,7 @@ func buildOutputColumns() []string {
 			fmt.Sprintf("batchdata_person%d_litigator", p),
 			fmt.Sprintf("batchdata_person%d_deceased", p),
 			fmt.Sprintf("batchdata_person%d_dob", p),
+			fmt.Sprintf("batchdata_person%d_mailing_address", p),
 		)
 		for ph := 1; ph <= maxPhonesPerPerson; ph++ {
 			cols = append(cols,
@@ -234,7 +240,7 @@ func (e enrichment) toRow() []string {
 
 	for p := 0; p < maxPersons; p++ {
 		person := e.BatchDataPersons[p]
-		row = append(row, person.Name, person.Litigator, person.Deceased, person.DOB)
+		row = append(row, person.Name, person.Litigator, person.Deceased, person.DOB, person.MailingAddress)
 		for ph := 0; ph < maxPhonesPerPerson; ph++ {
 			phone := person.Phones[ph]
 			row = append(row, phone.Number, phone.Type, phone.Carrier, phone.Tested, phone.Reachable, phone.DNC)

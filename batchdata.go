@@ -64,11 +64,46 @@ type batchDataPerson struct {
 	Name          struct {
 		Full string `json:"full"`
 	} `json:"name"`
-	Phones    []batchDataPhone `json:"phones"`
-	Emails    []batchDataEmail `json:"emails"`
-	Litigator bool             `json:"litigator"`
-	Deceased  bool             `json:"deceased"`
-	DOB       string           `json:"dob"`
+	Phones         []batchDataPhone       `json:"phones"`
+	Emails         []batchDataEmail       `json:"emails"`
+	Litigator      bool                   `json:"litigator"`
+	Deceased       bool                   `json:"deceased"`
+	DOB            string                 `json:"dob"`
+	MailingAddress batchDataAddressDetail `json:"mailingAddress"`
+}
+
+// batchDataAddressDetail mirrors BatchData's nested address shape (also
+// used for propertyAddress/property.address, though we only consume it for
+// mailingAddress right now). Unverified against a live response with this
+// field populated — check the first real result if the format looks off.
+type batchDataAddressDetail struct {
+	Street string `json:"street"`
+	City   string `json:"city"`
+	State  string `json:"state"`
+	Zip    string `json:"zip"`
+}
+
+func (a batchDataAddressDetail) String() string {
+	if a.Street == "" {
+		return ""
+	}
+	cityState := a.City
+	if a.State != "" {
+		if cityState != "" {
+			cityState += ", "
+		}
+		cityState += a.State
+	}
+	if a.Zip != "" {
+		if cityState != "" {
+			cityState += " "
+		}
+		cityState += a.Zip
+	}
+	if cityState == "" {
+		return a.Street
+	}
+	return a.Street + ", " + cityState
 }
 
 type batchDataPhone struct {

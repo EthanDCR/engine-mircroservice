@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -19,6 +20,38 @@ const dealMachineReverseGeocodeURL = "https://api.v2.dealmachine.com/v1/enrichme
 // but gives us owner name/phone/email directly from DealMachine so it's
 // available even for addresses BatchData fails to skip-trace.
 const dealMachineContactAudience = "owners"
+
+// dealMachineFields is shared between the actual API request and the cache
+// key — the fields requested change what DealMachine returns, not just what
+// we parse out of it, so a change here must bust the cache (same reasoning
+// as stormPullMinHailSizeIn in stormpull.go) or already-cached addresses
+// would keep serving responses fetched under the old field set forever.
+var dealMachineFields = []string{"year_built", "living_area_sqft", "roof_cover"}
+
+// flexStringList unmarshals a JSON field that's sometimes a single string
+// and sometimes an array of strings (DealMachine's multi-select fields, e.g.
+// roof_cover) into one consistent []string.
+type flexStringList []string
+
+func (f *flexStringList) UnmarshalJSON(data []byte) error {
+	var multi []string
+	if err := json.Unmarshal(data, &multi); err == nil {
+		*f = multi
+		return nil
+	}
+	var single string
+	if err := json.Unmarshal(data, &single); err != nil {
+		return err
+	}
+	if single != "" {
+		*f = []string{single}
+	}
+	return nil
+}
+
+func (f flexStringList) String() string {
+	return strings.Join(f, "; ")
+}
 
 type dealMachineClient struct {
 	apiKey  string
@@ -70,6 +103,13 @@ type dealMachineResult struct {
 	Zip            string               `json:"zip"`
 	YearBuilt      *int                 `json:"year_built"`
 	LivingAreaSqft *int                 `json:"living_area_sqft"`
+	// RoofCover is the roof's material (asphalt shingle, tile, metal, slate)
+	// — DealMachine's docs list this field as multi-select, so it's unmarshaled
+	// via flexStringList to accept either a single string or a string array,
+	// then joined for the flat output row. Not to be confused with
+	// DealMachine's separate `roof_type` field (roof *shape* — gable/hip/
+	// flat/shed), which we don't currently request or store.
+	RoofCover      flexStringList       `json:"roof_cover"`
 	Contacts       []dealMachineContact `json:"contacts"`
 	MatchFailure   *struct {
 		Code   string `json:"code"`
@@ -103,7 +143,8 @@ type dealMachineContact struct {
 // lookup, and changing the audience can't silently return a stale response
 // fetched under a different one.
 func (c *dealMachineClient) lookup(ctx context.Context, addr Address) (dealMachineResult, error) {
-	key := fmt.Sprintf("%s|%s|%s|%s|%s", addr.Street, addr.City, addr.State, addr.Zip, dealMachineContactAudience)
+	key := fmt.Sprintf("%s|%s|%s|%s|%s|%s", addr.Street, addr.City, addr.State, addr.Zip,
+		dealMachineContactAudience, strings.Join(dealMachineFields, ","))
 
 	data, err := cachedFetch(ctx, "dealmachine", key, func() ([]byte, error) {
 		return c.fetch(ctx, addr)
@@ -133,7 +174,8 @@ func (c *dealMachineClient) lookup(ctx context.Context, addr Address) (dealMachi
 // actually match against. Cached the same way as lookup(), just keyed by
 // coordinate instead of address string.
 func (c *dealMachineClient) reverseGeocode(ctx context.Context, lat, lng float64) (dealMachineResult, error) {
-	key := fmt.Sprintf("coord|%.6f|%.6f|%s", lat, lng, dealMachineContactAudience)
+	key := fmt.Sprintf("coord|%.6f|%.6f|%s|%s", lat, lng,
+		dealMachineContactAudience, strings.Join(dealMachineFields, ","))
 
 	data, err := cachedFetch(ctx, "dealmachine", key, func() ([]byte, error) {
 		return c.fetchReverseGeocode(ctx, lat, lng)
@@ -157,7 +199,7 @@ func (c *dealMachineClient) fetch(ctx context.Context, addr Address) ([]byte, er
 		Data: []dealMachineAddressInput{
 			{FullAddress: fmt.Sprintf("%s, %s, %s %s", addr.Street, addr.City, addr.State, addr.Zip)},
 		},
-		Fields:          []string{"year_built", "living_area_sqft"},
+		Fields:          dealMachineFields,
 		ContactAudience: dealMachineContactAudience,
 	}
 
@@ -171,7 +213,7 @@ func (c *dealMachineClient) fetch(ctx context.Context, addr Address) ([]byte, er
 func (c *dealMachineClient) fetchReverseGeocode(ctx context.Context, lat, lng float64) ([]byte, error) {
 	body := dealMachineReverseGeocodeRequest{
 		Data:            []dealMachineCoordInput{{Latitude: lat, Longitude: lng}},
-		Fields:          []string{"year_built", "living_area_sqft"},
+		Fields:          dealMachineFields,
 		ContactAudience: dealMachineContactAudience,
 	}
 

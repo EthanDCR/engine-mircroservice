@@ -512,10 +512,11 @@ func enrichRow(ctx context.Context, c *clients, addr Address) enrichment {
 		for p := 0; p < maxPersons && p < len(bdRes.Persons); p++ {
 			src := bdRes.Persons[p]
 			out := personOut{
-				Name:      src.Name.Full,
-				Litigator: strconv.FormatBool(src.Litigator),
-				Deceased:  strconv.FormatBool(src.Deceased),
-				DOB:       src.DOB,
+				Name:           src.Name.Full,
+				Litigator:      strconv.FormatBool(src.Litigator),
+				Deceased:       strconv.FormatBool(src.Deceased),
+				DOB:            src.DOB,
+				MailingAddress: src.MailingAddress.String(),
 			}
 			for ph := 0; ph < maxPhonesPerPerson && ph < len(src.Phones); ph++ {
 				phone := src.Phones[ph]
@@ -554,6 +555,9 @@ func enrichRow(ctx context.Context, c *clients, addr Address) enrichment {
 		}
 		if dmRes.LivingAreaSqft != nil {
 			enr.DealMachineLivingAreaSqft = strconv.Itoa(*dmRes.LivingAreaSqft)
+		}
+		if len(dmRes.RoofCover) > 0 {
+			enr.RoofType = dmRes.RoofCover.String()
 		}
 
 		for i := 0; i < maxDealMachineContacts && i < len(dmRes.Contacts); i++ {
