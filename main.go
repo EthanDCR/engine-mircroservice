@@ -359,7 +359,10 @@ func resultLogAttrs(addr Address, enr enrichment) []any {
 	} else {
 		attrs = append(attrs, "dealmachine_matched", enr.DealMachineMatched,
 			"dealmachine_year_built", enr.DealMachineYearBuilt,
-			"dealmachine_contacts", nonEmptyDealMachineContacts(enr))
+			"dealmachine_contacts", nonEmptyDealMachineContacts(enr),
+			// enr.RoofType is DealMachine's roof_cover (material), not its
+			// separate roof_type (shape) field — see types.go.
+			"dealmachine_roof_cover", enr.RoofType)
 	}
 	if enr.DealMachineResolvedStreet != "" {
 		attrs = append(attrs, "dealmachine_resolved_address",
@@ -371,7 +374,11 @@ func resultLogAttrs(addr Address, enr enrichment) []any {
 		attrs = append(attrs, "batchdata_error", enr.BatchDataError)
 	} else {
 		attrs = append(attrs, "batchdata_owner", enr.BatchDataPropertyOwnerName,
-			"batchdata_persons", nonEmptyBatchDataPersons(enr))
+			"batchdata_persons", nonEmptyBatchDataPersons(enr),
+			// Actual values (name: mailing address), not just a count — this
+			// is meant to be diffed directly against what the app shows for
+			// the same target, not just confirm data existed.
+			"batchdata_mailing_addresses", batchDataMailingAddresses(enr))
 	}
 
 	if enr.StormPullError != "" {
@@ -404,6 +411,29 @@ func nonEmptyBatchDataPersons(enr enrichment) int {
 		}
 	}
 	return n
+}
+
+// batchDataMailingAddresses renders "Name: address" for every person that
+// has one, e.g. "John Doe: 123 Main St, Springfield IL 62704" — logged
+// alongside the request so a rep-reported discrepancy (app shows nothing,
+// or shows something different) can be checked directly against what the
+// engine actually got back, not just whether *a* mailing address existed.
+func batchDataMailingAddresses(enr enrichment) string {
+	var parts []string
+	for _, p := range enr.BatchDataPersons {
+		if p.MailingAddress == "" {
+			continue
+		}
+		name := p.Name
+		if name == "" {
+			name = "(unnamed)"
+		}
+		parts = append(parts, name+": "+p.MailingAddress)
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, " | ")
 }
 
 // enrichRow runs the three independent API lookups (DealMachine, StormPull,
