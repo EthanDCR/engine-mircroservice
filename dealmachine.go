@@ -96,22 +96,27 @@ type dealMachineResult struct {
 	// actually matters to callers: that's DealMachine's authoritative
 	// address for a coordinate, used to correct a possibly-wrong
 	// reverse-geocoded address before handing it to BatchData.
-	FullAddress    string               `json:"full_address"`
-	Address        string               `json:"address"`
-	City           string               `json:"city"`
-	State          string               `json:"state"`
-	Zip            string               `json:"zip"`
-	YearBuilt      *int                 `json:"year_built"`
-	LivingAreaSqft *int                 `json:"living_area_sqft"`
+	FullAddress    string `json:"full_address"`
+	Address        string `json:"address"`
+	City           string `json:"city"`
+	State          string `json:"state"`
+	Zip            string `json:"zip"`
+	YearBuilt      *int   `json:"year_built"`
+	LivingAreaSqft *int   `json:"living_area_sqft"`
 	// RoofCover is the roof's material (asphalt shingle, tile, metal, slate)
 	// — DealMachine's docs list this field as multi-select, so it's unmarshaled
 	// via flexStringList to accept either a single string or a string array,
 	// then joined for the flat output row. Not to be confused with
 	// DealMachine's separate `roof_type` field (roof *shape* — gable/hip/
 	// flat/shed), which we don't currently request or store.
-	RoofCover      flexStringList       `json:"roof_cover"`
-	Contacts       []dealMachineContact `json:"contacts"`
-	MatchFailure   *struct {
+	RoofCover flexStringList `json:"roof_cover"`
+	// OwnerOccupied comes back on every matched property regardless of what's
+	// requested in dealMachineFields (confirmed against raw cached responses,
+	// which show it present even when not listed there) — no request-side
+	// change needed to start capturing it.
+	OwnerOccupied *bool                `json:"owner_occupied"`
+	Contacts      []dealMachineContact `json:"contacts"`
+	MatchFailure  *struct {
 		Code   string `json:"code"`
 		Reason string `json:"reason"`
 	} `json:"match_failure"`

@@ -73,6 +73,7 @@ type enrichment struct {
 	DealMachineMatched        string
 	DealMachineYearBuilt      string
 	DealMachineLivingAreaSqft string
+	DealMachineOwnerOccupied  string
 	DealMachineContacts       [maxDealMachineContacts]dmContactOut
 	DealMachineError          string
 
@@ -128,6 +129,7 @@ func buildOutputColumns() []string {
 		"dealmachine_matched",
 		"dealmachine_year_built",
 		"dealmachine_living_area_sqft",
+		"dealmachine_owner_occupied",
 	}
 
 	for c := 1; c <= maxDealMachineContacts; c++ {
@@ -206,6 +208,7 @@ func (e enrichment) toRow() []string {
 		e.DealMachineMatched,
 		e.DealMachineYearBuilt,
 		e.DealMachineLivingAreaSqft,
+		e.DealMachineOwnerOccupied,
 	}
 
 	for c := 0; c < maxDealMachineContacts; c++ {

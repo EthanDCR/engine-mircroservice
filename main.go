@@ -359,6 +359,7 @@ func resultLogAttrs(addr Address, enr enrichment) []any {
 	} else {
 		attrs = append(attrs, "dealmachine_matched", enr.DealMachineMatched,
 			"dealmachine_year_built", enr.DealMachineYearBuilt,
+			"dealmachine_owner_occupied", enr.DealMachineOwnerOccupied,
 			"dealmachine_contacts", nonEmptyDealMachineContacts(enr),
 			// Actual name(s), not just the count above, and whether each
 			// looks like an LLC/business entity rather than a person — meant
@@ -630,6 +631,9 @@ func enrichRow(ctx context.Context, c *clients, addr Address) enrichment {
 		}
 		if len(dmRes.RoofCover) > 0 {
 			enr.RoofType = dmRes.RoofCover.String()
+		}
+		if dmRes.OwnerOccupied != nil {
+			enr.DealMachineOwnerOccupied = strconv.FormatBool(*dmRes.OwnerOccupied)
 		}
 
 		for i := 0; i < maxDealMachineContacts && i < len(dmRes.Contacts); i++ {
