@@ -360,6 +360,11 @@ func resultLogAttrs(addr Address, enr enrichment) []any {
 		attrs = append(attrs, "dealmachine_matched", enr.DealMachineMatched,
 			"dealmachine_year_built", enr.DealMachineYearBuilt,
 			"dealmachine_contacts", nonEmptyDealMachineContacts(enr),
+			// Actual name(s), not just the count above, and whether each
+			// looks like an LLC/business entity rather than a person — meant
+			// to be eyeballed directly against what the app shows for the
+			// same target, the same way batchdata_mailing_addresses is below.
+			"dealmachine_contact_names", dealMachineContactNames(enr),
 			// enr.RoofType is DealMachine's roof_cover (material), not its
 			// separate roof_type (shape) field — see types.go.
 			"dealmachine_roof_cover", enr.RoofType)
@@ -374,6 +379,13 @@ func resultLogAttrs(addr Address, enr enrichment) []any {
 		attrs = append(attrs, "batchdata_error", enr.BatchDataError)
 	} else {
 		attrs = append(attrs, "batchdata_owner", enr.BatchDataPropertyOwnerName,
+			// OwnerIsBusiness is computed from BatchDataPropertyOwnerName
+			// (see isBusinessName) but was never actually logged anywhere —
+			// there was no way to tell from the logs alone whether an LLC
+			// got flagged as one. Note it's blank whenever BatchData didn't
+			// return an owner name at all, even if DealMachine's contact
+			// above is clearly a business — the two aren't cross-checked.
+			"batchdata_owner_is_business", enr.OwnerIsBusiness,
 			"batchdata_persons", nonEmptyBatchDataPersons(enr),
 			// Actual values (name: mailing address), not just a count — this
 			// is meant to be diffed directly against what the app shows for
@@ -401,6 +413,36 @@ func nonEmptyDealMachineContacts(enr enrichment) int {
 		}
 	}
 	return n
+}
+
+// dealMachineContactNames renders "Name (owner, LLC)" for every DealMachine
+// contact with a name — flags likely owner and business-entity status the
+// same way isBusinessName does for BatchData, so an LLC coming back from
+// DealMachine is visible in the log even on a row where BatchData errored
+// or returned no owner name at all (the two sources aren't merged).
+func dealMachineContactNames(enr enrichment) string {
+	var parts []string
+	for _, c := range enr.DealMachineContacts {
+		if c.Name == "" {
+			continue
+		}
+		var tags []string
+		if c.IsLikelyOwner == "true" {
+			tags = append(tags, "owner")
+		}
+		if isBusinessName(c.Name) {
+			tags = append(tags, "LLC")
+		}
+		if len(tags) == 0 {
+			parts = append(parts, c.Name)
+		} else {
+			parts = append(parts, fmt.Sprintf("%s (%s)", c.Name, strings.Join(tags, ", ")))
+		}
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, " | ")
 }
 
 func nonEmptyBatchDataPersons(enr enrichment) int {
