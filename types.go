@@ -54,8 +54,14 @@ type dmPhoneOut struct {
 }
 
 type dmContactOut struct {
-	Name          string
-	IsLikelyOwner string
+	Name string
+	// ContactType is DealMachine's own relationship classification — "owner",
+	// "owner_family", or similar (renter/resident audiences would add more).
+	// IsResident is whether this person actually lives at the property.
+	// Together these are what DealMachine's own UI renders as "Likely Owner"
+	// / "Family Member" / "Resident" badges.
+	ContactType string
+	IsResident  string
 	// BatchDataPhoneMatchScore is "1" if at least one of this contact's
 	// DealMachine phone numbers also appeared in BatchData's results for
 	// the same address, "0" otherwise. Matching numbers are cross-source
@@ -135,7 +141,8 @@ func buildOutputColumns() []string {
 	for c := 1; c <= maxDealMachineContacts; c++ {
 		cols = append(cols,
 			fmt.Sprintf("dealmachine_contact%d_name", c),
-			fmt.Sprintf("dealmachine_contact%d_is_likely_owner", c),
+			fmt.Sprintf("dealmachine_contact%d_contact_type", c),
+			fmt.Sprintf("dealmachine_contact%d_is_resident", c),
 			fmt.Sprintf("dealmachine_contact%d_batchdata_phone_match_score", c),
 		)
 		for ph := 1; ph <= maxDealMachinePhonesPerContact; ph++ {
@@ -213,7 +220,7 @@ func (e enrichment) toRow() []string {
 
 	for c := 0; c < maxDealMachineContacts; c++ {
 		contact := e.DealMachineContacts[c]
-		row = append(row, contact.Name, contact.IsLikelyOwner, contact.BatchDataPhoneMatchScore)
+		row = append(row, contact.Name, contact.ContactType, contact.IsResident, contact.BatchDataPhoneMatchScore)
 		for ph := 0; ph < maxDealMachinePhonesPerContact; ph++ {
 			phone := contact.Phones[ph]
 			row = append(row, phone.Number, phone.Type, phone.DNC)

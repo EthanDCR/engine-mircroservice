@@ -16,10 +16,15 @@ const dealMachineURL = "https://api.v2.dealmachine.com/v1/enrichment/address"
 const dealMachineReverseGeocodeURL = "https://api.v2.dealmachine.com/v1/enrichment/reverse-geocode"
 
 // dealMachineContactAudience controls which contacts DealMachine returns
-// alongside property fields. "owners" costs people credits (unlike "none"),
-// but gives us owner name/phone/email directly from DealMachine so it's
-// available even for addresses BatchData fails to skip-trace.
-const dealMachineContactAudience = "owners"
+// alongside property fields. Anything but "none" costs people credits, but
+// gives us contacts directly from DealMachine so they're available even for
+// addresses BatchData fails to skip-trace. "owners_and_family" (rather than
+// just "owners") is what actually returns family-member/resident contacts
+// alongside the owner — confirmed against the live API: "owners" alone
+// returned only the owner even for a property with a known second resident.
+// Valid values per the API's own validation error: owners, owners_and_family,
+// renters, residents, none.
+const dealMachineContactAudience = "owners_and_family"
 
 // dealMachineFields is shared between the actual API request and the cache
 // key — the fields requested change what DealMachine returns, not just what
@@ -123,13 +128,18 @@ type dealMachineResult struct {
 }
 
 // dealMachineContact mirrors one entry in DealMachine's `contacts` array,
-// present when the request's contact_audience is anything but "none". With
-// contact_audience "owners" every entry should be a property owner, but
-// IsLikelyOwner is kept so callers don't have to just trust that.
+// present when the request's contact_audience is anything but "none".
+// ContactType/IsResident are the fields that actually drive DealMachine's own
+// "Likely Owner" / "Family Member" / "Resident" badges — confirmed against
+// live responses (contact_type: "owner" | "owner_family", is_resident: bool).
+// The API no longer sends an is_likely_owner boolean at all (verified absent
+// on both owner and owner_family contacts in live testing) — this struct used
+// to parse that field, which meant it silently always unmarshaled to false.
 type dealMachineContact struct {
-	FullName      string `json:"full_name"`
-	IsLikelyOwner bool   `json:"is_likely_owner"`
-	Phones        []struct {
+	FullName    string `json:"full_name"`
+	ContactType string `json:"contact_type"`
+	IsResident  bool   `json:"is_resident"`
+	Phones      []struct {
 		Number    string `json:"number"`
 		Type      string `json:"type"`
 		DoNotCall bool   `json:"do_not_call"`

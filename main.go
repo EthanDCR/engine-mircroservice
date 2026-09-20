@@ -417,10 +417,10 @@ func nonEmptyDealMachineContacts(enr enrichment) int {
 }
 
 // dealMachineContactNames renders "Name (owner, LLC)" for every DealMachine
-// contact with a name — flags likely owner and business-entity status the
-// same way isBusinessName does for BatchData, so an LLC coming back from
-// DealMachine is visible in the log even on a row where BatchData errored
-// or returned no owner name at all (the two sources aren't merged).
+// contact with a name — flags contact_type/is_resident and business-entity
+// status the same way isBusinessName does for BatchData, so an LLC coming
+// back from DealMachine is visible in the log even on a row where BatchData
+// errored or returned no owner name at all (the two sources aren't merged).
 func dealMachineContactNames(enr enrichment) string {
 	var parts []string
 	for _, c := range enr.DealMachineContacts {
@@ -428,8 +428,11 @@ func dealMachineContactNames(enr enrichment) string {
 			continue
 		}
 		var tags []string
-		if c.IsLikelyOwner == "true" {
-			tags = append(tags, "owner")
+		if c.ContactType != "" {
+			tags = append(tags, c.ContactType)
+		}
+		if c.IsResident == "true" {
+			tags = append(tags, "resident")
 		}
 		if isBusinessName(c.Name) {
 			tags = append(tags, "LLC")
@@ -639,8 +642,9 @@ func enrichRow(ctx context.Context, c *clients, addr Address) enrichment {
 		for i := 0; i < maxDealMachineContacts && i < len(dmRes.Contacts); i++ {
 			src := dmRes.Contacts[i]
 			out := dmContactOut{
-				Name:          src.FullName,
-				IsLikelyOwner: strconv.FormatBool(src.IsLikelyOwner),
+				Name:        src.FullName,
+				ContactType: src.ContactType,
+				IsResident:  strconv.FormatBool(src.IsResident),
 			}
 			matched := false
 			slot := 0
