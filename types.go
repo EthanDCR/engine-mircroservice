@@ -73,8 +73,8 @@ type dmContactOut struct {
 }
 
 // enrichment holds every field this pipeline adds to a CSV row. Fields
-// left unset are written as empty columns in the output (roof type/size,
-// building/property type, business flag — no source covers these yet).
+// left unset are written as empty columns in the output (roof size,
+// building type, business flag — no source covers these yet).
 type enrichment struct {
 	DealMachineMatched        string
 	DealMachineYearBuilt      string
@@ -114,12 +114,19 @@ type enrichment struct {
 
 	// RoofType is DealMachine's roof_cover (material — shingle/tile/metal/
 	// slate), not DealMachine's separate roof_type field (roof *shape* —
-	// gable/hip/flat/shed, which we don't request). OwnerIsBusiness is
-	// derived from BatchDataPropertyOwnerName via isBusinessName. The rest
-	// have no source yet — always blank, kept as columns so the output CSV
-	// shape is stable once a 5th source is added.
+	// gable/hip/flat/shed, which we don't request). PropertyType is
+	// DealMachine's normalized property_type (multi-select, joined into one
+	// string — e.g. "Single Family" or "Mixed Use; Retail"). PropertyClass is
+	// DealMachine's own Commercial/Residential rollup of PropertyType, used
+	// as-is rather than re-derived from the 19-value list. Stories is
+	// DealMachine's stories field. OwnerIsBusiness is derived from
+	// BatchDataPropertyOwnerName via isBusinessName. BuildingType and
+	// RoofSizeSqft have no source yet — always blank, kept as columns so the
+	// output CSV shape is stable once a source is added.
 	BuildingType    string
 	PropertyType    string
+	PropertyClass   string
+	Stories         string
 	RoofType        string
 	RoofSizeSqft    string
 	OwnerIsBusiness string
@@ -203,6 +210,8 @@ func buildOutputColumns() []string {
 
 		"building_type",
 		"property_type",
+		"property_class",
+		"stories",
 		"roof_type",
 		"roof_size_sqft",
 		"owner_is_business",
@@ -265,6 +274,8 @@ func (e enrichment) toRow() []string {
 
 		e.BuildingType,
 		e.PropertyType,
+		e.PropertyClass,
+		e.Stories,
 		e.RoofType,
 		e.RoofSizeSqft,
 		e.OwnerIsBusiness,

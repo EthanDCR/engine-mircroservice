@@ -31,7 +31,10 @@ const dealMachineContactAudience = "owners_and_family"
 // we parse out of it, so a change here must bust the cache (same reasoning
 // as stormPullMinHailSizeIn in stormpull.go) or already-cached addresses
 // would keep serving responses fetched under the old field set forever.
-var dealMachineFields = []string{"year_built", "living_area_sqft", "roof_cover"}
+var dealMachineFields = []string{
+	"year_built", "living_area_sqft", "roof_cover",
+	"property_type", "property_class", "stories",
+}
 
 // flexStringList unmarshals a JSON field that's sometimes a single string
 // and sometimes an array of strings (DealMachine's multi-select fields, e.g.
@@ -119,7 +122,16 @@ type dealMachineResult struct {
 	// requested in dealMachineFields (confirmed against raw cached responses,
 	// which show it present even when not listed there) — no request-side
 	// change needed to start capturing it.
-	OwnerOccupied *bool                `json:"owner_occupied"`
+	OwnerOccupied *bool `json:"owner_occupied"`
+	// PropertyType is DealMachine's normalized property use/asset type —
+	// multi-select per DealMachine's docs (up to 19 values: Single Family,
+	// Retail, Mixed Use, etc.), hence flexStringList same as RoofCover.
+	// PropertyClass is DealMachine's own Commercial/Residential rollup of
+	// PropertyType — used directly instead of us re-deriving it from the
+	// 19-value list, since DealMachine already does that classification.
+	PropertyType  flexStringList       `json:"property_type"`
+	PropertyClass flexStringList       `json:"property_class"`
+	Stories       *float64             `json:"stories"`
 	Contacts      []dealMachineContact `json:"contacts"`
 	MatchFailure  *struct {
 		Code   string `json:"code"`
