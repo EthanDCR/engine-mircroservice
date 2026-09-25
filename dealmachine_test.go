@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -135,3 +136,66 @@ func TestFlexTypesAcceptQuotedScalars(t *testing.T) {
 		t.Errorf("stories label: %q", res.Stories.String())
 	}
 }
+
+// A coordinate match that resolved to a different address but carried nothing
+// for it must not displace the caller's own address — the empty-parcel
+// fallback. One populated field is enough to keep it.
+func TestResolvedAddressUsable(t *testing.T) {
+	base := func() dealMachineResult {
+		return dealMachineResult{Matched: true, Address: "123 Other St"}
+	}
+	withContact := base()
+	withContact.Contacts = []dealMachineContact{{FullName: "Jane Doe"}}
+	withYear := base()
+	withYear.YearBuilt = flexInt{Value: 2017, Valid: true}
+	withSqft := base()
+	withSqft.LivingAreaSqft = flexInt{Value: 25281, Valid: true}
+	withClass := base()
+	withClass.PropertyClass = flexStringList{"Commercial"}
+	withStories := base()
+	withStories.Stories = flexStringList{"1 Story"}
+	withRoof := base()
+	withRoof.RoofCover = flexStringList{"Asphalt Shingle"}
+	withType := base()
+	withType.PropertyType = flexStringList{"Single Family"}
+
+	// owner_occupied rides along on every match, so it must NOT by itself
+	// count as data — otherwise the fallback could never fire.
+	onlyOwnerOccupied := base()
+	onlyOwnerOccupied.OwnerOccupied = flexBool{Value: false, Valid: true}
+
+	unmatched := base()
+	unmatched.Matched = false
+	unmatched.Contacts = []dealMachineContact{{FullName: "Jane Doe"}}
+
+	noAddress := base()
+	noAddress.Address = ""
+	noAddress.Contacts = []dealMachineContact{{FullName: "Jane Doe"}}
+
+	cases := []struct {
+		name string
+		res  dealMachineResult
+		err  error
+		want bool
+	}{
+		{"empty parcel", base(), nil, false},
+		{"only owner_occupied", onlyOwnerOccupied, nil, false},
+		{"unmatched", unmatched, nil, false},
+		{"matched but no address", noAddress, nil, false},
+		{"lookup errored", withContact, errStub, false},
+		{"has contact", withContact, nil, true},
+		{"has year_built", withYear, nil, true},
+		{"has living_area_sqft", withSqft, nil, true},
+		{"has property_class", withClass, nil, true},
+		{"has stories", withStories, nil, true},
+		{"has roof_cover", withRoof, nil, true},
+		{"has property_type", withType, nil, true},
+	}
+	for _, c := range cases {
+		if got := resolvedAddressUsable(c.res, c.err); got != c.want {
+			t.Errorf("%s: got %v want %v", c.name, got, c.want)
+		}
+	}
+}
+
+var errStub = errors.New("boom")

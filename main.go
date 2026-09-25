@@ -554,8 +554,18 @@ func enrichRow(ctx context.Context, c *clients, addr Address) enrichment {
 			// Bulk CSV rows never carry lat/lng, so they never reach this
 			// wait and DealMachine/BatchData stay fully parallel for them.
 			dmWG.Wait()
-			if dmErr == nil && dmRes.Matched && dmRes.Address != "" {
+			if resolvedAddressUsable(dmRes, dmErr) {
 				bdAddr = Address{Street: dmRes.Address, City: dmRes.City, State: dmRes.State, Zip: dmRes.Zip}
+			} else if dmErr == nil && dmRes.Matched && dmRes.Address != "" {
+				// Matched a parcel and handed back an address, but carried
+				// nothing for it — see resolvedAddressUsable. Logged because
+				// it's otherwise invisible: the row still enriches, just off
+				// the original address, and this is the only record that a
+				// resolution was offered and rejected. Only map-click requests
+				// carry lat/lng, so this can't flood a bulk CSV run.
+				slog.InfoContext(ctx, "dealmachine resolved address discarded (empty parcel)",
+					"req_id", reqID(ctx), "street", addr.Street,
+					"resolved_street", dmRes.Address, "resolved_zip", dmRes.Zip)
 			}
 		}
 		bdRes, bdErr = c.batchData.skipTrace(ctx, bdAddr)
@@ -563,7 +573,10 @@ func enrichRow(ctx context.Context, c *clients, addr Address) enrichment {
 
 	wg.Wait()
 
-	if addr.Lat != nil && addr.Lng != nil && dmErr == nil && dmRes.Matched && dmRes.Address != "" {
+	// Same predicate as the BatchData substitution above, deliberately: these
+	// columns report the address the skip-trace actually ran against, so a
+	// resolution we declined to use must not appear here either.
+	if addr.Lat != nil && addr.Lng != nil && resolvedAddressUsable(dmRes, dmErr) {
 		enr.DealMachineResolvedStreet = dmRes.Address
 		enr.DealMachineResolvedCity = dmRes.City
 		enr.DealMachineResolvedState = dmRes.State

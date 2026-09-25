@@ -217,6 +217,40 @@ type dealMachineResult struct {
 	} `json:"match_failure"`
 }
 
+// hasPropertyData reports whether a matched result actually carried any of
+// what we asked for, as opposed to being a bare parcel record with an address
+// and nothing else.
+//
+// owner_occupied is deliberately excluded. DealMachine returns it on every
+// matched property regardless of the requested field set, so counting it would
+// make this predicate true for every match and defeat the point. Matched and
+// Address are excluded for the same reason: they're what we're deciding
+// whether to trust, so they can't also be the evidence.
+func (r dealMachineResult) hasPropertyData() bool {
+	return len(r.Contacts) > 0 ||
+		r.YearBuilt.Valid ||
+		r.LivingAreaSqft.Valid ||
+		len(r.RoofCover) > 0 ||
+		len(r.PropertyType) > 0 ||
+		len(r.PropertyClass) > 0 ||
+		len(r.Stories) > 0
+}
+
+// resolvedAddressUsable reports whether a coordinate match produced an address
+// worth preferring over the one the caller supplied.
+//
+// A match that resolved to some other address but came back with no property
+// data and no contacts is not evidence of a better address — it's an empty
+// parcel record. Substituting it moves the BatchData skip-trace off the
+// address the app actually has onto an unverified one, for no gain: the whole
+// reason to swap addresses is that DealMachine knows this parcel better than
+// the caller's geocoder does, and an empty result is DealMachine saying it
+// doesn't. Callers fall back to the original address for everything in that
+// case, including the dealmachine_resolved_* output columns.
+func resolvedAddressUsable(res dealMachineResult, err error) bool {
+	return err == nil && res.Matched && res.Address != "" && res.hasPropertyData()
+}
+
 // dealMachineContact mirrors one entry in DealMachine's `contacts` array,
 // present when the request's contact_audience is anything but "none".
 // ContactType/IsResident are the fields that actually drive DealMachine's own
