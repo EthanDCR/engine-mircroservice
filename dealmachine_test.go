@@ -17,7 +17,7 @@ const bodyStoriesString = `{"data":[{
   "roof_cover": "Asphalt Shingle",
   "property_type": "Single Family",
   "property_class": "Residential",
-  "stories": "1.5",
+  "stories": "1 Story",
   "contacts": [{"full_name":"Jane Doe","contact_type":"owner","is_resident":true,
                 "phones":[{"number":"5551234567","type":"mobile","do_not_call":false}]}]
 }]}`
@@ -49,8 +49,8 @@ func TestParseRecoversEverythingAroundStories(t *testing.T) {
 	if len(res.Contacts) != 1 || res.Contacts[0].FullName != "Jane Doe" {
 		t.Errorf("contacts lost: %+v", res.Contacts)
 	}
-	if !res.Stories.Valid || res.Stories.Value != 1.5 {
-		t.Errorf("stories not parsed: %+v", res.Stories)
+	if res.Stories.String() != "1 Story" {
+		t.Errorf("stories not parsed: %q", res.Stories.String())
 	}
 }
 
@@ -105,7 +105,7 @@ func TestFlexTypesNeverAbortDecoding(t *testing.T) {
 	if len(res.Contacts) != 1 {
 		t.Errorf("contacts after the garbage were dropped: %+v", res.Contacts)
 	}
-	if res.Stories.Valid || res.YearBuilt.Valid || res.OwnerOccupied.Valid {
+	if len(res.Stories) != 0 || res.YearBuilt.Valid || res.OwnerOccupied.Valid {
 		t.Errorf("garbage should leave fields unset: %+v", res)
 	}
 	if len(res.RoofCover) != 0 {
@@ -117,7 +117,7 @@ func TestFlexTypesNeverAbortDecoding(t *testing.T) {
 // DealMachine quotes inconsistently.
 func TestFlexTypesAcceptQuotedScalars(t *testing.T) {
 	body := `{"data":[{"matched":true,"year_built":"1998","living_area_sqft":"2140",
-	           "owner_occupied":"true","stories":"2"}]}`
+	           "owner_occupied":"true","stories":"2 Stories"}]}`
 	res, err := parseDealMachineResult(context.Background(), []byte(body))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -131,7 +131,7 @@ func TestFlexTypesAcceptQuotedScalars(t *testing.T) {
 	if !res.OwnerOccupied.Valid || !res.OwnerOccupied.Value {
 		t.Errorf("quoted owner_occupied: %+v", res.OwnerOccupied)
 	}
-	if !res.Stories.Valid || res.Stories.Value != 2 {
-		t.Errorf("quoted stories: %+v", res.Stories)
+	if res.Stories.String() != "2 Stories" {
+		t.Errorf("stories label: %q", res.Stories.String())
 	}
 }

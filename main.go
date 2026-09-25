@@ -647,8 +647,8 @@ func enrichRow(ctx context.Context, c *clients, addr Address) enrichment {
 		if len(dmRes.PropertyClass) > 0 {
 			enr.PropertyClass = dmRes.PropertyClass.String()
 		}
-		if dmRes.Stories.Valid {
-			enr.Stories = strconv.FormatFloat(dmRes.Stories.Value, 'f', -1, 64)
+		if len(dmRes.Stories) > 0 {
+			enr.Stories = dmRes.Stories.String()
 		}
 
 		for i := 0; i < maxDealMachineContacts && i < len(dmRes.Contacts); i++ {

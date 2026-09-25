@@ -44,9 +44,8 @@ var dealMachineFields = []string{
 // aborts decoding on the spot, silently dropping every field that appears
 // after this one in the response body. An unparseable value should therefore
 // cost us that one field and nothing else, which is what leaving the zero
-// value / Valid=false does. They also each treat a quoted number or boolean as
-// the bare thing, since DealMachine is inconsistent about quoting scalars
-// (`stories` arrives as "1.5" while every neighbouring number does not).
+// value / Valid=false does. They also each accept a quoted number or boolean
+// as the bare thing, since DealMachine is inconsistent about quoting scalars.
 
 // flexStringList unmarshals a JSON field that's sometimes a single string
 // and sometimes an array of strings (DealMachine's multi-select fields, e.g.
@@ -71,44 +70,6 @@ func (f *flexStringList) UnmarshalJSON(data []byte) error {
 
 func (f flexStringList) String() string {
 	return strings.Join(f, "; ")
-}
-
-// flexFloat unmarshals a JSON field that's sometimes a number and sometimes
-// a quoted numeric string. DealMachine sends `stories` as a string ("1",
-// "1.5") even though every other numeric field on the same object
-// (year_built, living_area_sqft, num_bedrooms) comes back as a bare number,
-// so a plain *float64 fails the unmarshal with an UnmarshalTypeError. That
-// error alone is survivable — encoding/json records a type mismatch and keeps
-// decoding the rest of the document — but the parse used to discard its result
-// whenever Unmarshal returned non-nil, so one string here threw away the entire
-// response: contacts, year built, sqft, roof cover, and the resolved parcel
-// address BatchData depends on. See parseDealMachineResult for that half.
-//
-// A non-numeric string (a range like "1-2", say) leaves Valid false rather
-// than erroring, per the rule above.
-type flexFloat struct {
-	Value float64
-	Valid bool
-}
-
-func (f *flexFloat) UnmarshalJSON(data []byte) error {
-	if s := strings.TrimSpace(string(data)); s == "null" || s == `""` {
-		return nil
-	}
-	if err := json.Unmarshal(data, &f.Value); err == nil {
-		f.Valid = true
-		return nil
-	}
-	var str string
-	if err := json.Unmarshal(data, &str); err != nil {
-		return nil
-	}
-	v, err := strconv.ParseFloat(strings.TrimSpace(str), 64)
-	if err != nil {
-		return nil
-	}
-	f.Value, f.Valid = v, true
-	return nil
 }
 
 // flexInt backs year_built and living_area_sqft. These were *int, which is a
@@ -239,11 +200,18 @@ type dealMachineResult struct {
 	// PropertyClass is DealMachine's own Commercial/Residential rollup of
 	// PropertyType — used directly instead of us re-deriving it from the
 	// 19-value list, since DealMachine already does that classification.
-	PropertyType  flexStringList       `json:"property_type"`
-	PropertyClass flexStringList       `json:"property_class"`
-	Stories       flexFloat            `json:"stories"`
-	Contacts      []dealMachineContact `json:"contacts"`
-	MatchFailure  *struct {
+	PropertyType  flexStringList `json:"property_type"`
+	PropertyClass flexStringList `json:"property_class"`
+	// Stories is a descriptive label, not a number — DealMachine returns
+	// "1 Story" (confirmed live), so it's stored verbatim rather than parsed
+	// into a float. Declaring it *float64 is what caused the outage this
+	// file's parse tolerance was built for: the string failed to unmarshal,
+	// and the resulting error threw away the whole property. Parsing a
+	// leading integer back out of it would invent a number DealMachine never
+	// sent and silently drop any non-numeric value ("Split Level").
+	Stories      flexStringList       `json:"stories"`
+	Contacts     []dealMachineContact `json:"contacts"`
+	MatchFailure *struct {
 		Code   string `json:"code"`
 		Reason string `json:"reason"`
 	} `json:"match_failure"`
@@ -327,8 +295,8 @@ func (c *dealMachineClient) reverseGeocode(ctx context.Context, lat, lng float64
 // apart from the one offending field. Bailing out on it, as this used to,
 // threw away a complete property (contacts, year built, sqft, roof cover, and
 // the resolved parcel address BatchData's skip-trace depends on) because one
-// field of forty had an unexpected type. DealMachine sending `stories` as a
-// quoted string is exactly that case; see flexFloat above.
+// field of forty had an unexpected type. DealMachine returning `stories` as
+// the string "1 Story" against a *float64 is exactly that case.
 //
 // A mismatch is logged rather than swallowed, since it means a field we asked
 // for is silently missing from every row until someone adjusts the struct.
