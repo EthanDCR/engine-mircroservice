@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -59,6 +60,43 @@ func (f *flexStringList) UnmarshalJSON(data []byte) error {
 
 func (f flexStringList) String() string {
 	return strings.Join(f, "; ")
+}
+
+// flexFloat unmarshals a JSON field that's sometimes a number and sometimes
+// a quoted numeric string. DealMachine sends `stories` as a string ("1",
+// "1.5") even though every other numeric field on the same object
+// (year_built, living_area_sqft, num_bedrooms) comes back as a bare number,
+// so a plain *float64 fails the unmarshal — and because encoding/json aborts
+// the whole document on the first type error, one string here threw away the
+// entire response: contacts, year built, sqft, roof cover, and the resolved
+// parcel address BatchData depends on.
+//
+// A non-numeric string (a range like "1-2", say) leaves Valid false rather
+// than erroring, for the same reason: one unrecognized value in one field
+// should cost us that field, not the whole property.
+type flexFloat struct {
+	Value float64
+	Valid bool
+}
+
+func (f *flexFloat) UnmarshalJSON(data []byte) error {
+	if s := strings.TrimSpace(string(data)); s == "null" || s == `""` {
+		return nil
+	}
+	if err := json.Unmarshal(data, &f.Value); err == nil {
+		f.Valid = true
+		return nil
+	}
+	var str string
+	if err := json.Unmarshal(data, &str); err != nil {
+		return err
+	}
+	v, err := strconv.ParseFloat(strings.TrimSpace(str), 64)
+	if err != nil {
+		return nil
+	}
+	f.Value, f.Valid = v, true
+	return nil
 }
 
 type dealMachineClient struct {
@@ -131,7 +169,7 @@ type dealMachineResult struct {
 	// 19-value list, since DealMachine already does that classification.
 	PropertyType  flexStringList       `json:"property_type"`
 	PropertyClass flexStringList       `json:"property_class"`
-	Stories       *float64             `json:"stories"`
+	Stories       flexFloat            `json:"stories"`
 	Contacts      []dealMachineContact `json:"contacts"`
 	MatchFailure  *struct {
 		Code   string `json:"code"`
