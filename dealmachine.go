@@ -66,14 +66,19 @@ func (f flexStringList) String() string {
 // a quoted numeric string. DealMachine sends `stories` as a string ("1",
 // "1.5") even though every other numeric field on the same object
 // (year_built, living_area_sqft, num_bedrooms) comes back as a bare number,
-// so a plain *float64 fails the unmarshal — and because encoding/json aborts
-// the whole document on the first type error, one string here threw away the
-// entire response: contacts, year built, sqft, roof cover, and the resolved
-// parcel address BatchData depends on.
+// so a plain *float64 fails the unmarshal with an UnmarshalTypeError. That
+// error alone is survivable — encoding/json records a type mismatch and keeps
+// decoding the rest of the document — but lookup/reverseGeocode discard the
+// parsed value whenever Unmarshal returns non-nil, so one string here threw
+// away the entire response: contacts, year built, sqft, roof cover, and the
+// resolved parcel address BatchData depends on.
 //
 // A non-numeric string (a range like "1-2", say) leaves Valid false rather
-// than erroring, for the same reason: one unrecognized value in one field
-// should cost us that field, not the whole property.
+// than erroring. That's deliberate and not merely tidiness: an error returned
+// from a custom UnmarshalJSON is NOT recorded-and-continued the way a plain
+// type mismatch is — it aborts decoding at that point, silently dropping every
+// field after this one in the response body. Returning an error here would be
+// strictly worse than the bug it replaced.
 type flexFloat struct {
 	Value float64
 	Valid bool
