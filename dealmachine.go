@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -37,6 +38,16 @@ var dealMachineFields = []string{
 	"property_type", "property_class", "stories",
 }
 
+// The flex* types below all follow one rule: never return an error, whatever
+// shape the value turns out to be. An error from a custom UnmarshalJSON is not
+// recorded-and-continued the way a plain struct-field type mismatch is — it
+// aborts decoding on the spot, silently dropping every field that appears
+// after this one in the response body. An unparseable value should therefore
+// cost us that one field and nothing else, which is what leaving the zero
+// value / Valid=false does. They also each treat a quoted number or boolean as
+// the bare thing, since DealMachine is inconsistent about quoting scalars
+// (`stories` arrives as "1.5" while every neighbouring number does not).
+
 // flexStringList unmarshals a JSON field that's sometimes a single string
 // and sometimes an array of strings (DealMachine's multi-select fields, e.g.
 // roof_cover) into one consistent []string.
@@ -50,7 +61,7 @@ func (f *flexStringList) UnmarshalJSON(data []byte) error {
 	}
 	var single string
 	if err := json.Unmarshal(data, &single); err != nil {
-		return err
+		return nil
 	}
 	if single != "" {
 		*f = []string{single}
@@ -68,17 +79,13 @@ func (f flexStringList) String() string {
 // (year_built, living_area_sqft, num_bedrooms) comes back as a bare number,
 // so a plain *float64 fails the unmarshal with an UnmarshalTypeError. That
 // error alone is survivable — encoding/json records a type mismatch and keeps
-// decoding the rest of the document — but lookup/reverseGeocode discard the
-// parsed value whenever Unmarshal returns non-nil, so one string here threw
-// away the entire response: contacts, year built, sqft, roof cover, and the
-// resolved parcel address BatchData depends on.
+// decoding the rest of the document — but the parse used to discard its result
+// whenever Unmarshal returned non-nil, so one string here threw away the entire
+// response: contacts, year built, sqft, roof cover, and the resolved parcel
+// address BatchData depends on. See parseDealMachineResult for that half.
 //
 // A non-numeric string (a range like "1-2", say) leaves Valid false rather
-// than erroring. That's deliberate and not merely tidiness: an error returned
-// from a custom UnmarshalJSON is NOT recorded-and-continued the way a plain
-// type mismatch is — it aborts decoding at that point, silently dropping every
-// field after this one in the response body. Returning an error here would be
-// strictly worse than the bug it replaced.
+// than erroring, per the rule above.
 type flexFloat struct {
 	Value float64
 	Valid bool
@@ -94,9 +101,69 @@ func (f *flexFloat) UnmarshalJSON(data []byte) error {
 	}
 	var str string
 	if err := json.Unmarshal(data, &str); err != nil {
-		return err
+		return nil
 	}
 	v, err := strconv.ParseFloat(strings.TrimSpace(str), 64)
+	if err != nil {
+		return nil
+	}
+	f.Value, f.Valid = v, true
+	return nil
+}
+
+// flexInt backs year_built and living_area_sqft. These were *int, which is a
+// trap once a type mismatch no longer aborts the parse: encoding/json
+// allocates the pointer before it discovers the value is the wrong type, so a
+// bad year_built left a non-nil pointer to 0 and the callsheet reported a
+// house built in year 0 rather than an unknown one. A Valid flag can't be
+// half-set that way.
+type flexInt struct {
+	Value int
+	Valid bool
+}
+
+func (f *flexInt) UnmarshalJSON(data []byte) error {
+	if s := strings.TrimSpace(string(data)); s == "null" || s == `""` {
+		return nil
+	}
+	if err := json.Unmarshal(data, &f.Value); err == nil {
+		f.Valid = true
+		return nil
+	}
+	var str string
+	if err := json.Unmarshal(data, &str); err != nil {
+		return nil
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(str))
+	if err != nil {
+		return nil
+	}
+	f.Value, f.Valid = v, true
+	return nil
+}
+
+// flexBool backs owner_occupied, for the same reason flexInt exists: as a
+// *bool, a mismatched value left a non-nil pointer to false, which reads as a
+// positive claim that the owner doesn't live there — worse than admitting we
+// don't know, since that flag drives targeting.
+type flexBool struct {
+	Value bool
+	Valid bool
+}
+
+func (f *flexBool) UnmarshalJSON(data []byte) error {
+	if s := strings.TrimSpace(string(data)); s == "null" || s == `""` {
+		return nil
+	}
+	if err := json.Unmarshal(data, &f.Value); err == nil {
+		f.Valid = true
+		return nil
+	}
+	var str string
+	if err := json.Unmarshal(data, &str); err != nil {
+		return nil
+	}
+	v, err := strconv.ParseBool(strings.TrimSpace(str))
 	if err != nil {
 		return nil
 	}
@@ -147,13 +214,13 @@ type dealMachineResult struct {
 	// actually matters to callers: that's DealMachine's authoritative
 	// address for a coordinate, used to correct a possibly-wrong
 	// reverse-geocoded address before handing it to BatchData.
-	FullAddress    string `json:"full_address"`
-	Address        string `json:"address"`
-	City           string `json:"city"`
-	State          string `json:"state"`
-	Zip            string `json:"zip"`
-	YearBuilt      *int   `json:"year_built"`
-	LivingAreaSqft *int   `json:"living_area_sqft"`
+	FullAddress    string  `json:"full_address"`
+	Address        string  `json:"address"`
+	City           string  `json:"city"`
+	State          string  `json:"state"`
+	Zip            string  `json:"zip"`
+	YearBuilt      flexInt `json:"year_built"`
+	LivingAreaSqft flexInt `json:"living_area_sqft"`
 	// RoofCover is the roof's material (asphalt shingle, tile, metal, slate)
 	// — DealMachine's docs list this field as multi-select, so it's unmarshaled
 	// via flexStringList to accept either a single string or a string array,
@@ -165,7 +232,7 @@ type dealMachineResult struct {
 	// requested in dealMachineFields (confirmed against raw cached responses,
 	// which show it present even when not listed there) — no request-side
 	// change needed to start capturing it.
-	OwnerOccupied *bool `json:"owner_occupied"`
+	OwnerOccupied flexBool `json:"owner_occupied"`
 	// PropertyType is DealMachine's normalized property use/asset type —
 	// multi-select per DealMachine's docs (up to 19 values: Single Family,
 	// Retail, Mixed Use, etc.), hence flexStringList same as RoofCover.
@@ -223,14 +290,7 @@ func (c *dealMachineClient) lookup(ctx context.Context, addr Address) (dealMachi
 		return dealMachineResult{}, err
 	}
 
-	var parsed dealMachineResponse
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		return dealMachineResult{}, err
-	}
-	if len(parsed.Data) == 0 {
-		return dealMachineResult{}, fmt.Errorf("dealmachine: empty data array in response")
-	}
-	return parsed.Data[0], nil
+	return parseDealMachineResult(ctx, data)
 }
 
 // reverseGeocode resolves DealMachine's own recorded parcel address for a
@@ -254,9 +314,36 @@ func (c *dealMachineClient) reverseGeocode(ctx context.Context, lat, lng float64
 		return dealMachineResult{}, err
 	}
 
+	return parseDealMachineResult(ctx, data)
+}
+
+// parseDealMachineResult decodes a raw enrichment response body (address or
+// reverse-geocode — same envelope either way) into its single result.
+//
+// It deliberately does NOT treat every non-nil error from json.Unmarshal as a
+// failed parse. encoding/json returns an *UnmarshalTypeError for a field whose
+// JSON type doesn't match the struct, but it records that error and keeps
+// decoding the rest of the document — so the struct comes back fully populated
+// apart from the one offending field. Bailing out on it, as this used to,
+// threw away a complete property (contacts, year built, sqft, roof cover, and
+// the resolved parcel address BatchData's skip-trace depends on) because one
+// field of forty had an unexpected type. DealMachine sending `stories` as a
+// quoted string is exactly that case; see flexFloat above.
+//
+// A mismatch is logged rather than swallowed, since it means a field we asked
+// for is silently missing from every row until someone adjusts the struct.
+// Anything that isn't a type mismatch — malformed JSON, a body that isn't an
+// object — is still a hard error: there's no usable partial result to keep.
+func parseDealMachineResult(ctx context.Context, data []byte) (dealMachineResult, error) {
 	var parsed dealMachineResponse
 	if err := json.Unmarshal(data, &parsed); err != nil {
-		return dealMachineResult{}, err
+		var typeErr *json.UnmarshalTypeError
+		if !errors.As(err, &typeErr) {
+			return dealMachineResult{}, err
+		}
+		slog.WarnContext(ctx, "dealmachine field type mismatch", "req_id", reqID(ctx),
+			"field", typeErr.Field, "expected_type", typeErr.Type.String(),
+			"got_json_type", typeErr.Value, "err", err)
 	}
 	if len(parsed.Data) == 0 {
 		return dealMachineResult{}, fmt.Errorf("dealmachine: empty data array in response")

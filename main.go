@@ -629,17 +629,17 @@ func enrichRow(ctx context.Context, c *clients, addr Address) enrichment {
 		enr.DealMachineError = dmErr.Error()
 	} else {
 		enr.DealMachineMatched = strconv.FormatBool(dmRes.Matched)
-		if dmRes.YearBuilt != nil {
-			enr.DealMachineYearBuilt = strconv.Itoa(*dmRes.YearBuilt)
+		if dmRes.YearBuilt.Valid {
+			enr.DealMachineYearBuilt = strconv.Itoa(dmRes.YearBuilt.Value)
 		}
-		if dmRes.LivingAreaSqft != nil {
-			enr.DealMachineLivingAreaSqft = strconv.Itoa(*dmRes.LivingAreaSqft)
+		if dmRes.LivingAreaSqft.Valid {
+			enr.DealMachineLivingAreaSqft = strconv.Itoa(dmRes.LivingAreaSqft.Value)
 		}
 		if len(dmRes.RoofCover) > 0 {
 			enr.RoofType = dmRes.RoofCover.String()
 		}
-		if dmRes.OwnerOccupied != nil {
-			enr.DealMachineOwnerOccupied = strconv.FormatBool(*dmRes.OwnerOccupied)
+		if dmRes.OwnerOccupied.Valid {
+			enr.DealMachineOwnerOccupied = strconv.FormatBool(dmRes.OwnerOccupied.Value)
 		}
 		if len(dmRes.PropertyType) > 0 {
 			enr.PropertyType = dmRes.PropertyType.String()
