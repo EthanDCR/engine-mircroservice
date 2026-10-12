@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 )
 
@@ -22,6 +23,14 @@ const stormPullCoordinateURL = "https://stormpull.com/api/v1/hail/coordinate"
 // takes effect because we compute "most recent" ourselves from the
 // (correctly filtered) results.events list instead of trusting the summary.
 const stormPullMinHailSizeIn = 1.25
+
+// How far back to request. StormPull's own default is 5 and its max is 10.
+// This was pinned at 1 while the only consumer was the "Events (12mo)"
+// figure; it's 5 now because the app shows a per-storm claim window (each
+// storm's statute of limitations counting down by state), which needs the
+// actual event list, not just a count. results.events comes back with the
+// request, so widening the window costs nothing extra per lookup.
+const stormPullYearsBack = 5
 
 type stormPullClient struct {
 	apiKey string
@@ -54,6 +63,34 @@ func mostRecentQualifyingEvent(events []stormPullEvent) (date string, sizeIn flo
 	return date, sizeIn, ok
 }
 
+// sortedStormPullEvents returns the events newest-first, deduped by day with
+// the largest size reported that day kept. StormPull can return several rows
+// for one storm; a claim-window list wants one entry per date.
+func sortedStormPullEvents(events []stormPullEvent) []hailEventOut {
+	byDate := make(map[string]float64, len(events))
+	for _, e := range events {
+		if e.Date == "" || e.HailSizeInches <= 0 {
+			continue
+		}
+		if cur, ok := byDate[e.Date]; !ok || e.HailSizeInches > cur {
+			byDate[e.Date] = e.HailSizeInches
+		}
+	}
+	out := make([]hailEventOut, 0, len(byDate))
+	for d, sz := range byDate {
+		out = append(out, hailEventOut{Date: d, Size: sz})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Date > out[j].Date })
+	return out
+}
+
+// hailEventOut is the shape handed downstream — deliberately `size` rather
+// than `hail_size_inches` to match the consumer's stored hail_history.
+type hailEventOut struct {
+	Date string  `json:"date"`
+	Size float64 `json:"size"`
+}
+
 // stormPullScore.Summary figures are computed from StormPull's full event
 // history regardless of the years_back/min_hail_size request params (per
 // their docs), so LargestHailInches/Date reflect the true all-time worst
@@ -70,21 +107,20 @@ type stormPullScore struct {
 }
 
 // lookup fetches hail history for a single address, scoped to the last
-// 12 months (yearsBack=1) to match the "Events (12mo)" figure the
-// project is targeting. Auth is via X-API-Key header, per StormPull's
+// stormPullYearsBack years. Auth is via X-API-Key header, per StormPull's
 // docs (not Bearer — confirmed against the live docs page). Responses
 // are cached on disk by address (or coordinates, see fetch) so re-shaping
 // what we extract never re-bills the lookup.
 func (c *stormPullClient) lookup(ctx context.Context, addr Address) (stormPullResponse, error) {
-	// min_hail_size (and years_back, fixed at 1 below) change what StormPull
-	// returns, not just what we parse out of it — they must be part of the
-	// key, or bumping stormPullMinHailSizeIn would keep serving responses
-	// fetched under the old threshold indefinitely.
+	// min_hail_size and years_back change what StormPull returns, not just
+	// what we parse out of it — they must both be part of the key, or
+	// bumping either would keep serving responses fetched under the old
+	// settings indefinitely.
 	key := fmt.Sprintf("%s|%s|%s|%s", addr.Street, addr.City, addr.State, addr.Zip)
 	if addr.Lat != nil && addr.Lng != nil {
 		key = fmt.Sprintf("%s|coord|%.6f|%.6f", key, *addr.Lat, *addr.Lng)
 	}
-	key = fmt.Sprintf("%s|min%.2f", key, stormPullMinHailSizeIn)
+	key = fmt.Sprintf("%s|min%.2f|yb%d", key, stormPullMinHailSizeIn, stormPullYearsBack)
 
 	data, err := cachedFetch(ctx, "stormpull", key, func() ([]byte, error) {
 		return c.fetch(ctx, addr)
@@ -113,12 +149,13 @@ func (c *stormPullClient) lookup(ctx context.Context, addr Address) (stormPullRe
 // score.summary.most_recent_event_date — see mostRecentQualifyingEvent.
 func (c *stormPullClient) fetch(ctx context.Context, addr Address) ([]byte, error) {
 	minHailSize := strconv.FormatFloat(stormPullMinHailSizeIn, 'f', -1, 64)
+	yearsBack := strconv.Itoa(stormPullYearsBack)
 	var u string
 	if addr.Lat != nil && addr.Lng != nil {
 		u = stormPullCoordinateURL + "?" + url.Values{
 			"lat":           {strconv.FormatFloat(*addr.Lat, 'f', -1, 64)},
 			"lon":           {strconv.FormatFloat(*addr.Lng, 'f', -1, 64)},
-			"years_back":    {"1"},
+			"years_back":    {yearsBack},
 			"min_hail_size": {minHailSize},
 			"include_score": {"true"},
 		}.Encode()
@@ -126,7 +163,7 @@ func (c *stormPullClient) fetch(ctx context.Context, addr Address) ([]byte, erro
 		full := fmt.Sprintf("%s, %s, %s %s", addr.Street, addr.City, addr.State, addr.Zip)
 		u = stormPullAddressURL + "?" + url.Values{
 			"address":       {full},
-			"years_back":    {"1"},
+			"years_back":    {yearsBack},
 			"min_hail_size": {minHailSize},
 			"include_score": {"true"},
 		}.Encode()

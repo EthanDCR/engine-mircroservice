@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/csv"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -526,6 +527,19 @@ func enrichRow(ctx context.Context, c *clients, addr Address) enrichment {
 			return
 		}
 		enr.StormPullEventsFound = strconv.Itoa(res.Results.EventsFound)
+		// Pass the event list through rather than collapsing it to a count:
+		// the app renders each storm with its own statute-of-limitations
+		// countdown, which needs the individual dates. Newest first so the
+		// consumer can take the head without re-sorting. A marshal failure
+		// here must not fail the row — the aggregates are still useful.
+		if events := sortedStormPullEvents(res.Results.Events); len(events) > 0 {
+			if b, err := json.Marshal(events); err == nil {
+				enr.StormPullEvents = string(b)
+			} else {
+				slog.WarnContext(ctx, "stormpull events marshal failed",
+					"req_id", reqID(ctx), "street", addr.Street, "err", err)
+			}
+		}
 		if res.Score != nil {
 			enr.StormPullExposureScore = fmt.Sprintf("%s · %d", res.Score.Tier, res.Score.Value)
 			if res.Score.Summary.LargestHailInches > 0 {

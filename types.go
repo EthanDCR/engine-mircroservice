@@ -94,7 +94,13 @@ type enrichment struct {
 	DealMachineResolvedState  string
 	DealMachineResolvedZip    string
 
-	StormPullEventsFound         string
+	StormPullEventsFound string
+	// StormPullEvents is results.events serialized as compact JSON —
+	// [{"date":"2025-04-20","size":1.51},…], newest first. The consumer
+	// stores it as the target's per-storm hail history, which drives the
+	// per-state claim-window countdown. Empty when StormPull returned no
+	// qualifying events.
+	StormPullEvents              string
 	StormPullMaxHailSizeIn       string
 	StormPullMaxHailDate         string
 	StormPullLastEventDate       string
@@ -172,6 +178,7 @@ func buildOutputColumns() []string {
 		"dealmachine_resolved_zip",
 
 		"stormpull_events_found",
+		"stormpull_events",
 		"stormpull_max_hail_size_in",
 		"stormpull_max_hail_date",
 		"stormpull_last_event_date",
@@ -247,6 +254,7 @@ func (e enrichment) toRow() []string {
 		e.DealMachineResolvedZip,
 
 		e.StormPullEventsFound,
+		e.StormPullEvents,
 		e.StormPullMaxHailSizeIn,
 		e.StormPullMaxHailDate,
 		e.StormPullLastEventDate,
